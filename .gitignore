@@ -1,0 +1,11 @@
+# 运行产物
+output/
+*.stats.json
+*.whisper.log
+
+# 测试素材（体积大，不入库）
+samples/
+
+# Python
+__pycache__/
+*.pyc
