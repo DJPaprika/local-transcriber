@@ -1,165 +1,258 @@
 # local-transcriber
 
-> 一条命令，把在线视频或本地媒体文件，变成纯文本和 SRT 字幕。
-> 全程本地运行 —— 不调用任何云端 API，音频不出本机。
+> 一条命令，把在线视频或本地媒体变成字幕；可选本地大模型做翻译、摘要、问答。
+> **全程离线**——音频不出本机。
+
+```bash
+python transcribe.py "https://www.bilibili.com/video/BVxxxx"
+```
+
+产出：
 
 ```
-yt-dlp 取流  →  ffmpeg 抽 16kHz 单声道 PCM  →  whisper.cpp 转写  →  输出 txt + srt
+output/transcript.srt          带时间轴的字幕
+output/transcript.txt          纯文本
+output/transcript.stats.json   本次运行的完整耗时
 ```
 
 ---
 
-## 为什么做这个
+## 它解决什么问题
 
-现成的转写方案通常是两种：要么用在线服务（按分钟计费、音频要上传），要么手动敲三四条命令串工具链（每次都要记得参数）。
+做本地转写，现成的方案通常两种：在线服务（按分钟计费、音频要上传），或者手动串三四条命令（`yt-dlp` → `ffmpeg` → 引擎 → 整理输出）。
 
-这个脚本解决的是后者：**把已经验证过的参数固化成一条命令，并且把耗时统计出来**——因为本地转写的瓶颈在哪，一开始并不明显。
+这个项目把后者固化下来，并且**把"慢在哪"测清楚**——因为本地转写的瓶颈并不在任何文档里写着。
+
+跑完之后还能接本地 LLM，把非中文内容翻成中文，或者直接问它"这视频讲了什么"。
+
+---
+
+## 特性
+
+| 特性 | 说明 |
+|---|---|
+| **双引擎** | SenseVoice（快，中文最优）/ Whisper（多语种，时间戳更精确） |
+| **自动取流** | 给 URL 就自己下载，给本地文件就直接用 |
+| **统一结构** | 两个引擎产出同一种 `Transcript`，上层不用区分 |
+| **本地 LLM** | 翻译 / 摘要 / 问答，llama.cpp + Vulkan，AMD 显卡可用 |
+| **惰性启停** | LLM 按需拉起、用完释放显存；已有服务则直接复用 |
+| **耗时拆分** | 把模型加载这种一次性成本单独拆出来，避免短样本测出误导性数字 |
+| **零 pip 依赖** | 引擎编排与 LLM 调用全部只用 Python 标准库 |
 
 ---
 
 ## 快速开始
 
-### 依赖
+### 依赖总览
 
-| 组件 | 用途 | 是否必需 |
+| 组件 | 用途 | 必需 |
 |---|---|---|
-| Python 3.9+ | 运行脚本（**只用标准库，不需要 pip 安装任何东西**） | 必需 |
-| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) 的 `whisper-cli` | 转写引擎 | 必需 |
-| ggml 模型文件 | 例如 `ggml-large-v3-turbo.bin` | 必需 |
-| ffmpeg | 抽取并重采样音频 | 必需 |
-| yt-dlp | 下载在线视频（仅输入为 URL 时需要） | 可选 |
+| Python 3.9+ | 主程序（只用标准库） | ✅ |
+| [ffmpeg](https://ffmpeg.org/) | 转码成 16kHz 单声道 PCM | ✅ |
+| whisper.cpp 的 `whisper-cli` + ggml 模型 | Whisper 引擎 | 二选一 |
+| [sherpa-onnx-node](https://github.com/k2-fsa/sherpa-onnx) + SenseVoice 模型 | SenseVoice 引擎 | 二选一 |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 下载在线视频 | 输入是 URL 时 |
+| llama.cpp（Vulkan 构建）+ Qwen GGUF | 翻译 / 摘要 / 问答 | 可选 |
 
-模型可从 whisper.cpp 仓库获取：
-
-```bash
-bash models/download-ggml-model.sh large-v3-turbo
-```
-
-### 运行
+### 最小可用（只要转写）
 
 ```bash
-# 本地文件
-python transcribe.py video.mp4 -m /path/to/ggml-large-v3-turbo.bin
+# 1. 装 ffmpeg 并确保在 PATH 里
+# 2. 准备 SenseVoice 模型（目录结构见下）
+# 3. 安装 sherpa-onnx-node
+npm install sherpa-onnx-node
 
-# 在线视频
-python transcribe.py "https://youtu.be/xxxx" -m /path/to/ggml-large-v3-turbo.bin -l zh
-
-# 工具不在 PATH 里时显式指定
-python transcribe.py video.mp4 \
-    -m models/ggml-large-v3-turbo.bin \
-    --whisper /path/to/whisper-cli \
-    --ffmpeg  /path/to/ffmpeg
-```
-
-模型路径也可以通过环境变量给出：
-
-```bash
-export WHISPER_MODEL=/path/to/ggml-large-v3-turbo.bin
+# 4. 跑
 python transcribe.py video.mp4
 ```
 
-### 常用参数
+SenseVoice 模型目录要求：
 
-| 参数 | 说明 |
-|---|---|
-| `-o, --outdir` | 输出目录（默认 `output/`） |
-| `-n, --name` | 输出文件名前缀（默认由源文件名推导） |
-| `-l, --language` | 语言代码，`auto` 为自动识别（默认 `zh`） |
-| `-t, --threads` | 转写线程数（默认 CPU 核数 − 4） |
-| `--prompt` | 初始提示词，用于纠正专有名词 |
-| `--keep-audio` | 保留中间产出的 16k wav |
-| `--verbose` | 实时显示 whisper 输出（默认写入日志文件） |
+```
+models/
+├── sensevoice-onnx/
+│   ├── model.int8.onnx
+│   └── tokens.txt
+└── silero/
+    └── silero_vad.onnx
+```
 
-### 产物
+用环境变量指定位置：
 
-| 文件 | 内容 |
-|---|---|
-| `<name>.txt` | 纯文本转写 |
-| `<name>.srt` | 带时间轴的字幕 |
-| `<name>.stats.json` | 本次运行的完整耗时统计（便于横向对比） |
-| `<name>.whisper.log` | whisper.cpp 的原始输出 |
+```bash
+set SENSEVOICE_MODEL_DIR=D:\path\to\models      # Windows cmd
+$env:SENSEVOICE_MODEL_DIR="D:\path\to\models"   # PowerShell
+export SENSEVOICE_MODEL_DIR=/path/to/models     # bash
+```
+
+### 换成 Whisper 引擎
+
+```bash
+python transcribe.py video.mp4 -e whisper -m models/ggml-large-v3-turbo.bin
+```
+
+Whisper 支持的语种远多于 SenseVoice，且时间戳更精确，代价是慢。
+
+### 启用 LLM（翻译 / 摘要 / 问答）
+
+```bash
+# 先转写（假设是英文素材）
+python transcribe.py talk.mp4 -l en
+
+# 翻成中文，输出 talk.zh.srt（保留时间轴）
+python translate.py output/talk.srt
+
+# 摘要
+python translate.py output/talk.txt --task summary
+
+# 针对内容提问
+python translate.py output/talk.txt --task ask -q "作者的核心论点是什么"
+```
+
+llama.cpp 从[官方 releases](https://github.com/ggml-org/llama.cpp/releases) 下载 `llama-*-bin-win-vulkan-x64.zip`
+（Vulkan 版对 AMD/NVIDIA/Intel 通用，解压即用，无需装 ROCm）。
+
+---
+
+## 架构
+
+```
+                    ┌───────────────────────────┐
+   输入（URL / 文件）│  transcribe.py            │
+                    │  ├ 取流（yt-dlp，可选）    │
+                    │  ├ 转码（ffmpeg → 16k）    │
+                    │  └ 调用引擎                │
+                    └─────────────┬─────────────┘
+                                  │
+                 ┌────────────────┴─────────────────┐
+         ┌───────▼────────┐                ┌────────▼────────┐
+         │ WhisperEngine  │                │ SenseVoice      │
+         │ 调 whisper-cli │                │ Engine          │
+         │ 解析 SRT       │                │ 调 Node 桥      │
+         └───────┬────────┘                └────────┬────────┘
+                 │                          ┌───────▼────────┐
+                 │                          │ sv-bridge.js   │
+                 │                          │ sherpa-onnx    │
+                 │                          │ 吐字符级时间戳  │
+                 │                          └────────────────┘
+         ┌───────▼──────────────────────────────┐
+         │ Transcript（统一结构）                │
+         │   segments[] / text / lang / stats   │
+         └───────┬──────────────────────────────┘
+                 │
+      ┌──────────▼─────────┐      ┌──────────────────────────┐
+      │ SRT / TXT 输出     │      │ translate.py → 本地 LLM  │
+      └────────────────────┘      │ 翻译 / 摘要 / 问答        │
+                                  └──────────────────────────┘
+```
+
+| 目录 | 放什么 | 详细说明 |
+|---|---|---|
+| `engines/` | 两个引擎的实现与统一接口 | [engines/README.md](engines/README.md) |
+| `bridge/` | SenseVoice 的 Node 桥 | [bridge/README.md](bridge/README.md) |
+| `llm/` | 本地 LLM 客户端、启停管理、任务 | [llm/README.md](llm/README.md) |
 
 ---
 
 ## 实测性能
 
-测试环境：AMD Ryzen（16 逻辑核）· 32 GB 内存 · Windows 11 · `ggml-large-v3-turbo` · 12 线程 · CPU 推理（无 GPU 加速）。
+测试环境：Intel i5-12600KF（6 P-core + 4 E-core）· 32 GB · Windows 11 ·
+AMD Radeon RX 6750 GRE 10GB（**仅 LLM 使用**）·
+`SenseVoice-small int8` / `whisper large-v3-turbo`，均为 **CPU 推理**。
 
-| 样本 | 音频时长 | 模型加载 | 净转写 | encode 占比 | 处理速度 |
-|---|---|---|---|---|---|
-| 片段 A | 1:00 | 1.0 s（热缓存） | 32.7 s | **77 %** | 1.83× 实时 |
-| 片段 B | 5:00 | 1.0 s（热缓存） | 141.0 s | **73 %** | 2.13× 实时 |
-| 完整视频 | 31:16 | 冷启动 ~80 s | — | — | 1.87× 实时 |
+### SenseVoice
 
-> 「处理速度」= 音频时长 ÷ 转写耗时，大于 1 表示比实时更快。
+| 音频 | 耗时 | 速度 |
+|---|---|---|
+| 1:00 | 1.8 s | **19.9× 实时** |
+| 5:00 | 49.9 s | 6.0× |
+| 24:20 | 370.7 s | 3.9× |
+| 31:16 | 373.6 s | 5.0× |
+
+### Whisper（large-v3-turbo，12 线程）
+
+| 音频 | 耗时 | 速度 |
+|---|---|---|
+| 1:00 | 33.8 s | 1.8× |
+| 5:00 | 142.1 s | 2.1× |
+| 31:16 | 1001 s | 1.9× |
 
 ### 从数据里读出的三件事
 
-**1. 编码器（encoder）是唯一的主要瓶颈**
-
-whisper.cpp 会打印各阶段耗时，300 秒样本的构成是：
+**① Whisper 的成本压在编码器上（73~77%）**
 
 ```
-encode   104.06 s   ████████████████████████████████  73%
-batchd    25.81 s   ████████                          18%
-sample     7.19 s   ██                                 5%
-prompt     3.50 s   █                                  2%
-mel        0.12 s
-decode     0.10 s
+encode  104.06 s (73%) │ batchd 25.81 s │ sample 7.19 s │ decode 0.10 s
 ```
 
-解码（decode）几乎不花时间，**全部成本压在 encoder 上**。原因在于 Whisper 的架构：音频先被切成 30 秒窗口，每个窗口都要完整跑一遍编码器，无论音频里是否有语音。
+Whisper 把音频切成 30 秒窗口，**每个窗口都要完整跑一遍 encoder**，不管里面有没有人声。
 
-**所以提速的正确方向只有一个：让 encoder 跑在 GPU 上。** 调线程数、换更小的模型、剪掉静音段，收益都远不如这一条。
+⇒ 提速的唯一大杠杆是让 encoder 上 GPU；调线程、换小模型都是小修小补。
 
-**2. 模型加载是一次性成本，且强烈依赖系统文件缓存**
+**② SenseVoice 快，但代价落在精度上**
 
-同一个模型文件：
+同一段音频，两个引擎对同一处的判断：
 
-| 场景 | 加载耗时 |
-|---|---|
-| 冷启动（首次读取，绕不过磁盘） | **~80 s** |
-| 热启动（文件已在系统缓存中） | **~1 s** |
+| 原文 | Whisper | SenseVoice |
+|---|---|---|
+| 研报 | 宏观**言报** ❌ | 宏观**研报** ✅ |
+| 闪辉（人名） | **闪辉** ✅ | **闪回** ❌ |
 
-对 31 分钟的视频，80 秒加载可以忽略；但对 1 分钟的短音频，加载能占到总耗时的 **70 %**，会让实测速度严重失真。
+这不是"谁更好"——SenseVoice 用约 1/3.5 的参数量 + int8 量化换来 3~10 倍速度，代价就是细节会掉。
 
-**如果只转一个短视频，别用"含加载"的倍率去评价性能。** 同理，批量转写多个文件时，真正该做的是让模型常驻内存（见下方优化方向），而不是反复启动进程。
+**③ 短样本的倍率会骗人**
 
-**3. 长音频的单位成本更低**
+模型加载是一次性成本：冷启动（首次读盘）约 80 秒，热启动约 1 秒。
+拿 1 分钟音频去测，这个成本能占到总耗时 70%，测出来的"速度"毫无参考价值。
 
-60 秒样本每音频秒耗 0.56 秒，300 秒样本降到 0.47 秒。因为窗口越多，启动阶段和首窗口的固定开销越被摊薄。
+`stats.json` 同时记录 `realtime_factor_total`（含加载）与 `realtime_factor_net`（净转写），就是防这个陷阱。
 
 ---
 
 ## 设计取舍
 
-**为什么强制转成 16kHz / 单声道 / 16-bit PCM？**
+**为什么强制 16kHz / 单声道 / 16-bit PCM**
 
-这是 Whisper 系列模型的输入规格。如果直接喂 44.1kHz 立体声，whisper.cpp 会自己做一遍重采样——白白多花一次 CPU，而且要先解码整段音频。在 ffmpeg 这一步转好，转写阶段就是纯粹的推理。
+这是 Whisper 与 SenseVoice 共同要求的输入规格。不转的话引擎会自己重采样一遍，白白多花一次 CPU，而且要先解码整段音频。
 
-**为什么不用 ffprobe 取音频时长？**
+**为什么不用 ffprobe 取时长**
 
-没必要多起一个进程。转成 16kHz 单声道 16-bit PCM 之后，每秒固定是 `16000 × 2 = 32000` 字节，`文件大小 ÷ 32000` 就是时长，误差在采样精度以内。
+转成 16kHz 单声道 16-bit PCM 之后，每秒固定 `16000 × 2 = 32000` 字节，`文件大小 ÷ 32000` 就是时长，误差在采样精度内。少起一个进程。
 
-**为什么把子进程输出写文件而不是管道？**
+**为什么子进程输出写文件而不是管道**
 
-早期版本用管道捕获 whisper 的输出以解析耗时，但在受限的执行环境（例如带沙箱的终端）下，创建管道可能被拒绝。写文件同样能拿到完整输出，且不依赖管道。需要实时看进度时用 `--verbose` 切回直接输出。
+受限环境（带沙箱的终端）可能拒绝创建管道。写文件同样能拿到完整输出，再由主进程轮询增量转发到终端——既能看到实时进度，又能事后解析耗时。
 
-**为什么只用标准库？**
+**为什么 SenseVoice 的时间戳要加段偏移**
 
-这是个一次跑完就退出的命令行工具，引入依赖只会让"换台机器就得先装环境"这件事变得更烦。
+它的 VAD 会先把音频切成若干语音段，每段单独识别，时间戳是**段内相对**的。而 `seg.start` 给的是**采样点编号**，不是秒。所以：
+
+```python
+绝对时间 = seg.start / 16000 + token.timestamp
+```
+
+漏掉任何一半，整条时间轴都会错位。
+
+**为什么翻译不逐条调模型**
+
+一个字幕文件动辄几百条，逐条翻译意味着几百次请求。所以按批发送（默认每批 20 条 / 1200 字），并要求模型**按编号逐条返回**；条数对不上时先重试一次，仍不行就整批退回原文——**宁可保留原文，也不让时间轴错位**。
+
+**为什么 LLM 用惰性启停**
+
+模型常驻要占 4 GB 以上显存，忘了关就一直占着。所以默认"按需拉起、用完释放"，同时保留复用：已经开着的服务不去动它，批量处理时也能共用同一个实例。
 
 ---
 
-## 已知限制与优化方向
+## 已知限制
 
-| 限制 | 说明 | 可行的解法 |
+| 限制 | 影响 | 可行方向 |
 |---|---|---|
-| **encoder 跑在 CPU 上** | 本机显卡是 AMD，whisper.cpp 默认构建不含其加速后端，日志里明确写着 `no GPU found` | 自行编译 whisper.cpp 并启用 **Vulkan** 后端（AMD 可用），或换 NVIDIA + CUDA |
-| **模型每次重新加载** | 转一个文件加载一次，批量场景浪费严重 | 改用 whisper.cpp 自带的 **`whisper-server`**：模型常驻内存，通过 HTTP 提交任务 |
-| 长音频不切分 | 目前整段送入，单文件失败就得重跑 | 按静音点切段后并行转写，最后按时间轴拼接 |
-| 专有名词识别错误 | 人名、专业术语易被同音字替换 | 用 `--prompt` 提供词表；或转写后做一次术语校正 |
-| 依赖外部工具 | 需要用户自行安装 ffmpeg / whisper.cpp | 后续可加启动自检，缺什么直接给出安装指引 |
+| **断句会切在词中间** | 长句被切成一端悬空 | 接入中文分词，只在词边界断 |
+| **偶发噪声字符** | 出现孤立的英文字母串 | 用 token 置信度过滤 |
+| **SenseVoice 只支持 5 种语言** | 中/粤/英/日/韩 之外无法识别 | 换用 Whisper 引擎 |
+| **Whisper 的 encoder 仍在 CPU** | 长音频慢 | 自行编译启用 Vulkan 后端 |
+| **翻译依赖 LLM 输出格式** | 偶尔少回或合并条目 | 已有重试与兜底 |
+| **llama-server 需自行准备** | 翻译前要先装 llama.cpp 与模型 | 后续可做一键下载 |
 
 ---
 
@@ -167,13 +260,20 @@ decode     0.10 s
 
 ```
 local-transcriber/
-├── transcribe.py          # 主脚本
-├── README.md
-├── samples/               # 测试用片段（不入库）
-└── output/                # 运行产物（不入库）
-    ├── .work/             # 中间文件：下载的媒体、16k wav
-    ├── <name>.txt
-    ├── <name>.srt
-    ├── <name>.stats.json
-    └── <name>.whisper.log
+├── transcribe.py            # 转写入口
+├── translate.py             # 翻译 / 摘要 / 问答入口
+├── engines/                 # 引擎实现（见各自 README）
+├── bridge/sv-bridge.js      # SenseVoice 的 Node 桥
+├── llm/                     # 本地大模型能力
+├── output/                  # 运行产物（不入库）
+└── models/                  # 模型文件（不入库，也可用环境变量指向外部目录）
 ```
+
+---
+
+## 许可
+
+本项目代码采用 MIT 许可。
+
+模型权重各随其原始许可：SenseVoice 遵循 FunASR Model License（官方澄清允许商用，需保留归属与模型名），
+Qwen 遵循其模型卡，whisper.cpp 的 ggml 模型由 OpenAI 权重转换而来。
