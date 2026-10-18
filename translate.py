@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ctx", type=int, default=8192)
     p.add_argument("--keep-server", action="store_true", help="跑完不关闭本次启动的服务")
     p.add_argument("--no-start", action="store_true", help="假定服务已在运行，不尝试启动")
+    p.add_argument("--limit", type=int, default=0, help="只处理前 N 条字幕（调试用，0=全部）")
     args = p.parse_args(argv)
 
     src = Path(args.input).expanduser()
@@ -94,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             segments = parse_srt(src.read_text(encoding="utf-8", errors="replace"))
             if not segments:
                 sys.exit("[x] 没有解析到字幕条目")
+            if args.limit > 0:
+                segments = segments[: args.limit]
             print(f"[>>] 共 {len(segments)} 条字幕，开始翻译……", flush=True)
 
             def progress(i: int, total: int, got: int, expected: int) -> None:

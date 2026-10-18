@@ -7,6 +7,7 @@ Bridge 只负责「WAV 进去，字符级时间戳出来」；断句合并成字
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -31,7 +32,8 @@ def build_segments(chars: list[list], *, max_chars: int = MAX_CHARS) -> list[Seg
             return
         start = cur[0][1]
         text = "".join(c for c, _ in cur).strip()
-        if text:
+        # 只剩标点/空白的条目没有字幕价值，丢掉
+        if text and re.search(r"\w", text):
             cues.append(Segment(start=start, end=max(end, start + 0.2), text=text))
         cur.clear()
 

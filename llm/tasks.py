@@ -43,6 +43,19 @@ def _chunk(segments: list, max_chars: int = 1200, max_items: int = 20) -> list[l
     return batches
 
 
+def _parse_numbered(reply: str) -> dict[int, str]:
+    """把「1. 文本」这样的编号行解析成 {编号: 文本}（续行并入上一条）。"""
+    mapping: dict[int, str] = {}
+    for line in reply.splitlines():
+        m = _NUM_RE.match(line)
+        if m:
+            mapping[int(m.group(1))] = m.group(2).strip()
+        elif line.strip() and mapping:
+            last = max(mapping)
+            mapping[last] = (mapping[last] + " " + line.strip()).strip()
+    return mapping
+
+
 def translate_segments(
     client: ChatClient,
     segments: list,
@@ -58,24 +71,27 @@ def translate_segments(
     for idx, batch in enumerate(batches, 1):
         lines = "\n".join(f"{i}. {seg.text}" for i, seg in enumerate(batch, 1))
         prompt = f"把下面每条字幕翻译成{target}，保持编号：\n\n{lines}"
-        reply = client.chat(
-            [
-                {"role": "system", "content": TRANSLATE_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
 
-        # 按编号解析；条数对不上就整批退回原文，宁可保留原文也不丢时间轴
         mapping: dict[int, str] = {}
-        for line in reply.splitlines():
-            m = _NUM_RE.match(line)
-            if m:
-                mapping[int(m.group(1))] = m.group(2).strip()
-            elif line.strip() and mapping:
-                last = max(mapping)
-                mapping[last] = (mapping[last] + " " + line.strip()).strip()
+        for attempt in range(2):
+            extra = ""
+            if attempt > 0:
+                extra = (
+                    f"\n\n注意：上一次返回的条数不对。这一次必须严格输出 {len(batch)} 条，"
+                    f"每条单独一行，编号从 1 到 {len(batch)}，不要合并、不要省略、不要多加。"
+                )
+            reply = client.chat(
+                [
+                    {"role": "system", "content": TRANSLATE_SYSTEM},
+                    {"role": "user", "content": prompt + extra},
+                ],
+                temperature=0.2 if attempt == 0 else 0.1,
+            )
+            mapping = _parse_numbered(reply)
+            if len(mapping) == len(batch):
+                break
 
+        # 条数对不上时逐条退回原文：宁可保留原文，也不让时间轴错位
         for i, seg in enumerate(batch, 1):
             text = mapping.get(i) or seg.text
             out.append(type(seg)(start=seg.start, end=seg.end, text=text))
