@@ -1,0 +1,21 @@
+{
+  "source": "samples/yt-demo.webm",
+  "engine": "sensevoice",
+  "language": "zh",
+  "media": "yt-demo.webm",
+  "media_bytes": 18417843,
+  "duration_seconds": 1393.76,
+  "acquire_seconds": 0.0,
+  "extract_seconds": 2.06,
+  "transcribe_seconds": 304.56,
+  "realtime_factor_total": 4.58,
+  "realtime_factor_net": 4.59,
+  "segments": 410,
+  "engine_stats": {
+    "vad_segments": 55,
+    "load_seconds": 1.08,
+    "infer_seconds": 302.45,
+    "realtime_factor": 4.61,
+    "elapsed_seconds": 304.56
+  }
+}

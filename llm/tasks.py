@@ -10,20 +10,48 @@ import re
 
 from .client import ChatClient
 
-TRANSLATE_SYSTEM = (
-    "你是专业的字幕翻译。要求：\n"
-    "1. 只输出译文，不要解释、不要评论、不要加引号；\n"
-    "2. 保持原有的编号和行数，一条对一条；\n"
-    "3. 译文要口语化、自然，符合字幕阅读习惯；\n"
-    "4. 人名、机构名、专业术语保持准确，必要时保留原文。"
-)
+TRANSLATE_SYSTEM = """你是专业的字幕翻译。严格遵守以下规则：
 
-SUMMARIZE_SYSTEM = (
-    "你是会议与视频内容分析助手。要求：先给一句话结论，再给要点列表，"
-    "最后标注内容里提到但未展开的疑问点。不要编造原文没有的信息。"
-)
+1. 只输出译文，不解释、不加引号、不加任何注释；
+2. 严格一条对一条，编号与原文一致，不合并、不拆分、不省略、不新增；
+3. 每条译文尽量不超过原文长度的两倍——字幕要能一眼读完；
+4. 口语化、自然，符合目标语言的说话习惯，不要书面腔；
+5. 人名、机构名等专有名词保留原形或沿用其惯用译名，全篇保持一致；
+6. 若某条是纯符号或无实义内容，原样输出该条，不要留空；
+7. 不要输出编号以外的任何内容（不要"以下是翻译"之类的开场白）。"""
 
+SUMMARIZE_SYSTEM = """你是一名通用内容摘要编辑，输入是任意领域音视频的自动转写稿——访谈、讲座、会议、庭审、教程、播客都可能。
+
+只依据原文，不补充文本里没有的信息。
+
+分三部分写，用【】小标题。除「转写存疑处」要求对着原文核验外，其余两部分写成连贯的话就行，不必凑条目、不必编号：
+
+【一句话结论】
+一句话，说清最关键的人和结果。有判决、决定、具体数字就写进去。
+
+【内容大意】
+把这段内容讲清楚，抓主线和关键细节，不必面面俱到。
+- 原文里的具体数字、时间、人名、机构名，务必保留。
+- 有两个以上说话人时，转述观点必须写明是谁说的（作者、投稿者、受访者、提问者……）；判断不出来就写"有人提出"，不要硬派给某个人。
+- 拿不准的用"疑似""据称"，不要写成定论。
+
+【转写存疑处】
+只在确实发现语音识别出错时才写：专有名词或数字明显是同音错字、句子里混进乱码、一句话读不通。
+每条附上对应原文；有几处写几处，一处都没有就只写「无」。
+不要为了凑数把正常句子抄一遍，这里也不放内容本身的疑问。"""
+
+QA_SYSTEM = """只依据给定的转写文本作答，不臆测。
+
+规则：
+- 有依据时：先给结论，再引用一句原文作为支撑；
+- 没有依据时：直接回答「文中没有提到」；
+- 问题有歧义时：先说明你的理解，再作答。"""
+
+# 形如 "12. 文本" 或 "12、文本"
 _NUM_RE = re.compile(r"^\s*(\d+)\s*[.、:：)]\s*(.*)$")
+
+# 送给模型的文本上限（字符）。中文约 1 字 ≈ 1.4 token，配 32K 上下文时留足输出余量。
+MAX_INPUT_CHARS = 20000
 
 
 def _chunk(segments: list, max_chars: int = 1200, max_items: int = 20) -> list[list]:
@@ -70,7 +98,7 @@ def translate_segments(
 
     for idx, batch in enumerate(batches, 1):
         lines = "\n".join(f"{i}. {seg.text}" for i, seg in enumerate(batch, 1))
-        prompt = f"把下面每条字幕翻译成{target}，保持编号：\n\n{lines}"
+        prompt = f"把下面每条字幕翻译成{target}，编号必须一一对应：\n\n{lines}"
 
         mapping: dict[int, str] = {}
         for attempt in range(2):
@@ -102,29 +130,34 @@ def translate_segments(
     return out
 
 
-def summarize(client: ChatClient, text: str, *, max_points: int = 8) -> str:
-    """对转写全文做摘要。"""
-    prompt = (
-        f"下面是视频的完整转写文本，请总结：\n"
-        f"- 一句话结论\n- 不超过 {max_points} 个要点\n- 文中提到但没说清的问题\n\n"
-        f"文本：\n{text[:12000]}"
-    )
+def summarize(client: ChatClient, text: str) -> str:
+    """对转写全文做摘要（通用三段式）。"""
+    body = text[:MAX_INPUT_CHARS]
+    truncated = len(text) > MAX_INPUT_CHARS
+    prompt = "下面是这段音视频的自动转写原始文本"
+    prompt += "（内容过长，只给了前面一部分）" if truncated else ""
+    prompt += f"：\n\n{body}"
     return client.chat(
         [
             {"role": "system", "content": SUMMARIZE_SYSTEM},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
+        temperature=0.0,
+        max_tokens=1500,
     )
 
 
 def ask(client: ChatClient, text: str, question: str) -> str:
     """针对转写内容提问。"""
-    prompt = f"根据以下视频转写内容回答问题。若文中没有依据，直接说「文中没有提到」。\n\n转写：\n{text[:12000]}\n\n问题：{question}"
+    prompt = (
+        f"转写文本：\n{text[:MAX_INPUT_CHARS]}\n\n"
+        f"问题：{question}"
+    )
     return client.chat(
         [
-            {"role": "system", "content": "你只依据给定文本作答，不臆测。"},
+            {"role": "system", "content": QA_SYSTEM},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
+        max_tokens=1024,
     )

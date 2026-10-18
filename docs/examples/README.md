@@ -2,25 +2,33 @@
 
 这个目录放的是**真实跑一遍**的结果，不是构造的样例。
 
-## 素材
+## 两个素材
 
-| 项 | 值 |
-|---|---|
-| 来源 | B 站公开视频 `BV1FapX6rEU8` |
-| 时长 | 24 分 20 秒 |
-| 语言 | 中文 |
+| | B 站案件纪录片 | YouTube 观点访谈 |
+|---|---|---|
+| 来源 | `BV1FapX6rEU8` | YouTube `watch?v=if1OOU9RPls` |
+| 内容 | 一桩假直播杀人案的庭审纪实 | 化工从业者批评频道主的宏观经济观点 |
+| 时长 | 24 分 20 秒 | 23 分 14 秒 |
+| 语言 | 中文（夹少量英文原声） | 中文 |
+| 说话人 | 多段旁白 + 庭审 + 报警录音 | 两个人来回（作者 / 投稿者） |
+
+选这两个，是因为它们暴露的问题不一样：前者是**中英混杂 + 噪声**，后者是**多人对话的说话人归属**。
 
 ## 怎么跑出来的
 
 ```bash
 # 1. 转写（默认 SenseVoice 引擎）
-python transcribe.py "https://www.bilibili.com/video/BV1FapX6rEU8" -o output/bili
+python transcribe.py "https://www.bilibili.com/video/BV1FapX6rEU8" -o output/bili -n bili-demo
 
 # 2. 摘要（本地 Qwen2.5-7B-Instruct Q4_K_M + llama.cpp Vulkan）
-python translate.py output/bili/transcript.txt --task summary
+python translate.py output/bili/bili-demo.txt --task summary
 ```
 
+YouTube 那份同理，只是源换成视频链接。注意 yt-dlp 抓 YouTube 需要本机有可用的代理。
+
 ## 运行数据
+
+### B 站 24:20
 
 | 阶段 | 耗时 |
 |---|---|
@@ -29,42 +37,41 @@ python translate.py output/bili/transcript.txt --task summary
 | **转写（1459.7 秒音频）** | **370.66 s** |
 | 速度 | **3.94× 实时** |
 
-| 产出 | 数量 |
+VAD 语音段 161 · 字幕 391 条 · 约 7150 字
+
+### YouTube 23:14
+
+| 阶段 | 耗时 |
 |---|---|
-| VAD 语音段 | 161 |
-| 字幕条数 | 391 |
-| 转写字数 | 约 7150 |
+| 下载（17.6 MB opus 音频） | 4 s |
+| 转码（16kHz 单声道 PCM） | 2.1 s |
+| **转写（1393.8 秒音频）** | **304.6 s** |
+| 速度 | **4.58× 实时**（净 4.59×） |
+
+VAD 语音段 55 · 字幕 410 条 · 8628 字
+
+> 后者语速更快、字数更多，反而转得更快——因为全是清晰人声，没有英文、没有噪声。
 
 ## 文件
 
 | 文件 | 内容 |
 |---|---|
-| [`bili-demo.srt`](bili-demo.srt) | 完整字幕，391 条 |
-| [`bili-demo.summary.md`](bili-demo.summary.md) | Qwen 生成的摘要 |
+| [`bili-demo.srt`](bili-demo.srt) | B 站字幕，391 条 |
+| [`bili-demo.summary.md`](bili-demo.summary.md) | 对应的摘要 + 提示词新旧两版对比 |
 | [`bili-demo.stats.json`](bili-demo.stats.json) | 本次运行的完整统计 |
+| [`yt-demo.srt`](yt-demo.srt) | YouTube 字幕，410 条 |
+| [`yt-demo.summary.md`](yt-demo.summary.md) | 对应的摘要 + 它写错的地方 |
+| [`yt-demo.stats.json`](yt-demo.stats.json) | 本次运行的完整统计 |
 
-## 这份示例想说明三件事
+## 这些示例想说明三件事
 
 **① 它能真的用**
 
-字幕里的人名、地名、案情细节基本准确：
+字幕里的人名、地名、案情细节、经济学术语基本准确；摘要抓的是需要推理的点，
+比如「电脑记录显示直播期间没有实际操作，暗示直播是提前录制好的」——这是从多处
+转写内容归纳出来的，不是原句照搬。
 
-```
-1
-00:00:00,226 --> 00:00:04,986
-2022年世界杯决赛之夜，北爱尔兰一名女子在家中遇害，
-
-2
-00:00:05,026 --> 00:00:09,816
-警方很快锁定了她的男友，一位坐拥数万粉丝的网络主播。
-```
-
-**② 摘要不是简单罗列**
-
-它抓到了需要推理的点，比如「电脑记录显示直播期间没有实际操作，暗示直播是提前录制好的」——
-这是从多处转写内容里归纳出来的，不是原句照搬。
-
-**③ 它也诚实地暴露了问题**
+**② 它没有掩盖问题**
 
 字幕里会出现这种切法：
 
@@ -73,7 +80,7 @@ python translate.py output/bili/transcript.txt --task summary
 达6个小时的真人直播
 ```
 
-摘要里也有 `“Ne to kill is”` 这种把识别错误原样带下来的情况。
+摘要里会出现把正常表达判成错字的情况（见 `yt-demo.summary.md` 里标了「误报」的两条）。
 
-**这些不是 bug 掩盖，是真实局限**，记在根 README 的「已知限制」里：
-断句是硬切（24 字上限卡在词中间）、偶发噪声字符、模型对专有名词的处理不稳定。
+**这些不是被藏起来的 bug，是真实局限**，记在根 README 的「已知限制」里：
+断句是硬切（24 字上限卡在词中间）、偶发噪声字符、多个说话人时归属会串。

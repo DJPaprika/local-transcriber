@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--server", default=DEFAULT_SERVER, help="llama-server 可执行文件")
     p.add_argument("--model", default=DEFAULT_MODEL, help="GGUF 模型路径")
     p.add_argument("--ngl", type=int, default=24, help="卸载到 GPU 的层数（留余量用 24）")
-    p.add_argument("--ctx", type=int, default=8192)
+    p.add_argument("--ctx", type=int, default=32768, help="上下文长度（长文本摘要建议 ≥32768）")
     p.add_argument("--keep-server", action="store_true", help="跑完不关闭本次启动的服务")
     p.add_argument("--no-start", action="store_true", help="假定服务已在运行，不尝试启动")
     p.add_argument("--limit", type=int, default=0, help="只处理前 N 条字幕（调试用，0=全部）")
