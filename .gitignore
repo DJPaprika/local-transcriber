@@ -9,3 +9,6 @@ samples/
 # Python
 __pycache__/
 *.pyc
+
+# 示例产物里的统计文件要保留
+!docs/examples/*.stats.json

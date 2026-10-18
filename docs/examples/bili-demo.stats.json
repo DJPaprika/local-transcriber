@@ -1,0 +1,21 @@
+{
+  "source": "https://www.bilibili.com/video/BV1FapX6rEU8",
+  "engine": "sensevoice",
+  "language": "zh",
+  "media": "source.m4a",
+  "media_bytes": 20111057,
+  "duration_seconds": 1459.68,
+  "acquire_seconds": 3.84,
+  "extract_seconds": 1.2,
+  "transcribe_seconds": 370.66,
+  "realtime_factor_total": 3.94,
+  "realtime_factor_net": 3.95,
+  "segments": 391,
+  "engine_stats": {
+    "vad_segments": 161,
+    "load_seconds": 1.01,
+    "infer_seconds": 368.59,
+    "realtime_factor": 3.96,
+    "elapsed_seconds": 370.66
+  }
+}
