@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -40,6 +41,40 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def log(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+# ---------------------------------------------------------------- 进度上报
+# Web UI 靠这个文件判断进度，不解析日志文本。CLI 不传 --progress 时完全不写。
+
+_PROGRESS: Path | None = None
+_T0 = time.time()
+
+
+def progress(stage: str, percent: float = -1.0, detail: str = "", **extra) -> None:
+    """把当前进度写进 JSON 文件；没指定路径时什么都不做。percent 为负表示不确定进度。"""
+    if _PROGRESS is None:
+        return
+    payload = {
+        "stage": stage,
+        "percent": round(percent, 1) if percent >= 0 else None,
+        "detail": detail,
+        "elapsed": round(time.time() - _T0, 1),
+        "pid": os.getpid(),
+        "updated_at": time.time(),
+    }
+    payload.update(extra)
+    try:
+        _PROGRESS.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # 进度写不进去不该弄挂主流程
+
+
+def _heartbeat(stop: threading.Event, total: float) -> None:
+    """转写期间定时刷新，让界面上的计时器动起来。"""
+    while not stop.wait(2.0):
+        used = time.time() - _T0
+        left = max(0.0, total / 4.6 - used) if total else 0.0
+        progress("transcribe", -1.0, f"转写中，已用 {hms(used)}，预计还剩 {hms(left)}")
 
 
 def hms(seconds: float) -> str:
@@ -104,6 +139,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--prompt", default="", help="whisper 初始提示词，用于纠正专有名词")
     p.add_argument("--keep-audio", action="store_true", help="保留中间 wav")
     p.add_argument("--quiet", action="store_true", help="不显示实时输出，只写日志")
+    p.add_argument("--progress", default="", help="把进度写进这个 JSON 文件（Web UI 用，可选）")
     return p.parse_args(argv)
 
 
@@ -181,7 +217,14 @@ def extract_audio(media: Path, work: Path, ffmpeg: str) -> tuple[Path, float, fl
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _PROGRESS, _T0
     args = parse_args(sys.argv[1:] if argv is None else argv)
+
+    _T0 = time.time()
+    if args.progress:
+        _PROGRESS = Path(args.progress).expanduser().resolve()
+        _PROGRESS.parent.mkdir(parents=True, exist_ok=True)
+    progress("prepare", detail="准备中")
 
     engine = build_engine(args)
     ffmpeg = resolve_tool("ffmpeg", args.ffmpeg, "--ffmpeg")
@@ -191,15 +234,25 @@ def main(argv: list[str] | None = None) -> int:
     work = outdir / ".work"
     work.mkdir(exist_ok=True)
 
+    progress("acquire", detail="下载媒体（yt-dlp）" if is_url(args.source) else "读取本地媒体")
     media, acquire_sec, default_stem = acquire_source(args, work)
+
+    progress("extract", detail="抽取音频（16kHz 单声道）")
     wav, extract_sec, duration = extract_audio(media, work, ffmpeg)
 
     log(f"\n     音频时长 {hms(duration)}，引擎 {engine.name}，开始转写……")
+    progress("transcribe", 0, f"音频 {hms(duration)}，开始转写", duration=round(duration, 1))
+    stop = threading.Event()
+    threading.Thread(target=_heartbeat, args=(stop, duration), daemon=True).start()
     try:
         transcript = engine.transcribe(wav, language=args.language, quiet=args.quiet)
     except EngineError as exc:
+        progress("failed", detail=str(exc))
         sys.exit(f"[x] {exc}")
+    finally:
+        stop.set()
 
+    progress("write", 95.0, "写入字幕")
     stem = safe_stem(args.name or default_stem)
     (outdir / f"{stem}.srt").write_text(transcript.to_srt(), encoding="utf-8")
     (outdir / f"{stem}.txt").write_text(transcript.text + "\n", encoding="utf-8")
@@ -253,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
     log(f"              : {outdir / f'{stem}.txt'}")
     log(f"  统计        : {outdir / f'{stem}.stats.json'}")
     log("=" * 52)
+    progress(
+        "done", 100.0,
+        f"{len(transcript.segments)} 条字幕，{speed_all:.2f}× 实时",
+        srt=str(outdir / f"{stem}.srt"),
+        txt=str(outdir / f"{stem}.txt"),
+        stats=str(outdir / f"{stem}.stats.json"),
+        segments=len(transcript.segments),
+        duration=round(duration, 1),
+    )
     return 0
 
 

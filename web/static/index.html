@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>local-transcriber</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>local-transcriber</h1>
+  <span class="sub">本地离线语音转写 · 视频 → 字幕</span>
+</header>
+
+<main>
+
+  <!-- 新建任务 -->
+  <section class="panel">
+    <h2>新建转写</h2>
+    <form id="form">
+      <label class="field">
+        <span>视频链接或本地文件</span>
+        <input id="source" type="text" placeholder="https://... 或 D:\videos\a.mp4" autocomplete="off">
+      </label>
+
+      <div class="row">
+        <label class="field">
+          <span>输出名</span>
+          <input id="name" type="text" placeholder="留空自动生成" autocomplete="off">
+        </label>
+        <label class="field narrow">
+          <span>引擎</span>
+          <select id="engine">
+            <option value="sensevoice">SenseVoice（快）</option>
+            <option value="whisper">Whisper（多语种）</option>
+          </select>
+        </label>
+        <label class="field narrow">
+          <span>语言</span>
+          <select id="language">
+            <option value="auto">自动</option>
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+            <option value="ja">日文</option>
+            <option value="ko">韩文</option>
+            <option value="yue">粤语</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="submit">开始转写</button>
+        <span id="form-error" class="err"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 任务列表 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>任务</h2>
+      <button id="refresh" class="ghost" type="button">刷新</button>
+    </div>
+    <div id="jobs" class="jobs">
+      <p class="empty">还没有任务</p>
+    </div>
+  </section>
+
+</main>
+
+<template id="job-tpl">
+  <article class="job">
+    <div class="job-head">
+      <span class="badge"></span>
+      <span class="job-kind"></span>
+      <span class="job-name"></span>
+      <span class="job-time"></span>
+      <button class="cancel ghost" type="button">取消</button>
+    </div>
+    <div class="bar"><i></i></div>
+    <div class="job-detail"></div>
+    <details class="log-wrap">
+      <summary>日志</summary>
+      <pre class="log"></pre>
+    </details>
+    <div class="job-actions"></div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -114,6 +114,28 @@ llama.cpp 从[官方 releases](https://github.com/ggml-org/llama.cpp/releases) �
 
 ---
 
+## Web UI
+
+不想敲命令的话，有一个浏览器界面，**零新增依赖**（标准库 `http.server`）：
+
+```bash
+python web/serve.py
+```
+
+它会从 8081 开始找一个空闲端口，然后自动打开浏览器。页面上可以：
+
+- 贴视频链接或本机路径，选引擎和语言，点「开始转写」
+- 实时看进度条和完整日志
+- 完成后直接下载 `.srt` / `.txt`，或一键「生成摘要」「翻译成中文」
+
+任务是**串行**的（SenseVoice 会吃满 CPU，显存也只够一个 llama-server），
+其余排队显示「排队中」。
+
+底层调用的还是 `transcribe.py` / `translate.py`，所以 CLI 能跑通的 UI 一定能跑通。
+详见 [`web/README.md`](web/README.md)，方案取舍见 [`docs/webui-plan.md`](docs/webui-plan.md)。
+
+---
+
 ## 架构
 
 ```
@@ -283,6 +305,7 @@ local-transcriber/
 ├── engines/                 # 引擎实现（见各自 README）
 ├── bridge/sv-bridge.js      # SenseVoice 的 Node 桥
 ├── llm/                     # 本地大模型能力
+├── web/                     # 浏览器界面（零新增依赖，见 web/README.md）
 ├── docs/examples/           # 真实运行的示例产物
 ├── output/                  # 运行产物（不入库）
 └── models/                  # 模型文件（不入库，也可用环境变量指向外部目录）
