@@ -212,12 +212,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _derive_name(src: str) -> str:
-    """从 URL 或文件名推一个安全的输出名。"""
-    s = src.strip().rstrip("/")
+    """从 URL 或文件名推一个安全的输出名。
+
+    注意：Windows 路径用反斜杠，必须先统一成正斜杠再切最后一段，
+    否则 `D:\\a\\b\\clip.wav` 会整串留下来，变成
+    `D_a_b_clip` 这种又长又找不到对应文件的目录名。
+    """
+    s = src.strip()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.replace("\\", "/").rstrip("/")
+
     base = s.rsplit("/", 1)[-1] or "transcript"
-    if "v=" in base:  # YouTube 风格
+    if "v=" in base:  # YouTube 风格 watch?v=xxxx
         base = base.split("v=")[-1]
-    base = base.split("?")[0]
+    base = base.split("?")[0].split("#")[0]
+
     for suffix in (".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".wav", ".flac", ".srt", ".txt"):
         if base.lower().endswith(suffix):
             base = base[: -len(suffix)]
