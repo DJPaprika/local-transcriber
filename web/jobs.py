@@ -213,9 +213,16 @@ class JobManager:
                 cmd.append("--keep-audio")
             return cmd
 
+        # 摘要 / 翻译 / 问答的输入：前端给的是相对 output/ 的路径（如 clip40/clip40.txt），
+        # 直接交给 translate.py 会按当前工作目录解析，落到项目根下就找不到了。
+        inp = Path(p["input"]).expanduser()
+        if not inp.is_absolute():
+            inp = self.out_root / inp
+        src = str(inp)
+
         if kind == "translate":
             return [
-                PY, str(ROOT / "translate.py"), p["input"],
+                PY, str(ROOT / "translate.py"), src,
                 "--task", "translate",
                 "--target", p.get("target", "简体中文"),
                 "-o", str(outdir / f"{p['name']}.zh.srt"),
@@ -223,13 +230,13 @@ class JobManager:
 
         if kind == "summary":
             return [
-                PY, str(ROOT / "translate.py"), p["input"],
+                PY, str(ROOT / "translate.py"), src,
                 "--task", "summary",
                 "-o", str(outdir / f"{p['name']}.summary.md"),
             ]
 
         return [
-            PY, str(ROOT / "translate.py"), p["input"],
+            PY, str(ROOT / "translate.py"), src,
             "--task", "ask", "-q", p["question"],
         ]
 

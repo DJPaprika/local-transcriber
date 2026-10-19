@@ -174,7 +174,7 @@ def acquire_source(args: argparse.Namespace, work: Path) -> tuple[Path, float, s
         old.unlink(missing_ok=True)
 
     log("\n[>>] 下载媒体（yt-dlp）")
-    cmd = [ytdlp, "-f", "bestaudio/best", "--no-playlist",
+    cmd = [ytdlp, "-f", "bestaudio/best", "--no-playlist", "--write-info-json",
            "-o", str(work / "source.%(ext)s"), args.source]
     log("     " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
     t0 = time.perf_counter()
@@ -185,11 +185,30 @@ def acquire_source(args: argparse.Namespace, work: Path) -> tuple[Path, float, s
     if proc.returncode != 0:
         sys.exit(f"[x] 下载失败（退出码 {proc.returncode}）")
 
-    candidates = [f for f in work.glob("source.*") if f.is_file()]
+    candidates = [
+        f for f in work.glob("source.*") if f.is_file() and f.suffix != ".json"
+    ]
     if not candidates:
         sys.exit("[x] 下载完成但没找到媒体文件")
     media = max(candidates, key=lambda f: f.stat().st_size)
-    return media, time.perf_counter() - t0, "transcript"
+
+    # 用视频标题当默认输出名：b23.tv/xxxx、youtu.be/xxxx 这种短链 ID
+    # 过几天就不知道是哪个视频了，标题可读得多。
+    title = read_title(work / "source.info.json")
+    stem = safe_stem(title)[:40] if title else "transcript"
+    if title:
+        log(f"     标题：{title}")
+    return media, time.perf_counter() - t0, stem
+
+
+def read_title(info_path: Path) -> str:
+    """从 yt-dlp 写的 source.info.json 里取标题；取不到就返回空串。"""
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    title = (data.get("title") or "").strip()
+    return title[:80]
 
 
 def extract_audio(media: Path, work: Path, ffmpeg: str) -> tuple[Path, float, float]:
@@ -236,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
 
     progress("acquire", detail="下载媒体（yt-dlp）" if is_url(args.source) else "读取本地媒体")
     media, acquire_sec, default_stem = acquire_source(args, work)
+    # 下面会删掉 .work，媒体文件大小得先记下来，否则 stat 时文件已经没了
+    media_bytes = media.stat().st_size if media.exists() else 0
 
     progress("extract", detail="抽取音频（16kHz 单声道）")
     wav, extract_sec, duration = extract_audio(media, work, ffmpeg)
@@ -257,8 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     (outdir / f"{stem}.srt").write_text(transcript.to_srt(), encoding="utf-8")
     (outdir / f"{stem}.txt").write_text(transcript.text + "\n", encoding="utf-8")
 
-    if not args.keep_audio:
-        wav.unlink(missing_ok=True)
+    if args.keep_audio:
+        log(f"\n     保留中间音频：{wav}")
+    else:
+        # .work 里只剩 wav 和 info.json，都没用了，整个目录清掉
+        shutil.rmtree(work, ignore_errors=True)
 
     timings = transcript.stats.get("whisper_timings", {}) or {}
     load = timings.get("load_time") or transcript.stats.get("load_seconds") or 0.0
@@ -272,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         "engine": engine.name,
         "language": transcript.lang,
         "media": media.name,
-        "media_bytes": media.stat().st_size,
+        "media_bytes": media_bytes,
         "duration_seconds": round(duration, 2),
         "acquire_seconds": round(acquire_sec, 2),
         "extract_seconds": round(extract_sec, 2),
