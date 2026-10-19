@@ -55,6 +55,7 @@ with LlamaServer(exe=..., model=..., ngl=24) as server:
 | `ngl` | 24 | 卸载到 GPU 的层数，**留余量用 24**（全上 GPU 用 99） |
 | `ctx` | 32768 | 上下文长度。中文约 1.4 token/字，放得下两万字；调大见下方「上下文与显存」 |
 | `ready_timeout` | 180 秒 | 等待就绪的上限 |
+| `pid_file` | 无 | 启动后把 pid 写进去，供 Web UI 停常驻服务 |
 
 ## 客户端（client.py）
 
@@ -181,4 +182,10 @@ python translate.py output/talk.srt --no-start
 
 # 跑完别关服务（批量处理时用）
 python translate.py output/talk.srt --keep-server
+
+# pid 默认写 output/.jobs/llama-server.pid；传空串则不留
+python translate.py output/talk.srt --keep-server --pid-file ""
 ```
+
+Web UI 的「常驻」开关就是把 `--keep-server` 加进摘要/翻译任务；
+「停掉服务」读 pid 文件后 `taskkill /T /F`。外部自己起的服务没有 pid 文件，不会被误杀。

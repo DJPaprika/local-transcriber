@@ -19,13 +19,28 @@ const os = require("os");
 const path = require("path");
 
 // ---------------------------------------------------------------- 依赖定位
-// 探测顺序：环境变量 → 项目本地 → 已知默认位置
+// 探测顺序：环境变量 → 项目本地 → 全局 npm 根 / DSH 依赖树 → 常规解析
+
+function knownInstallLocations() {
+  const out = [];
+  if (process.env.APPDATA) {
+    const npmRoot = path.join(process.env.APPDATA, "npm", "node_modules");
+    // DSH 把 sherpa-onnx-node 装在自己的依赖树里
+    out.push(path.join(npmRoot, "@deepseek-ai", "dsh", "node_modules", "sherpa-onnx-node"));
+    out.push(path.join(npmRoot, "sherpa-onnx-node"));
+  }
+  if (process.env.DSH_HOME) {
+    out.push(path.join(process.env.DSH_HOME, "node_modules", "sherpa-onnx-node"));
+  }
+  return out;
+}
 
 function resolveSherpa() {
   const candidates = [
     process.env.SHERPA_ONNX_NODE,
     path.join(__dirname, "..", "node_modules", "sherpa-onnx-node"),
     path.join(__dirname, "node_modules", "sherpa-onnx-node"),
+    ...knownInstallLocations(),
     "sherpa-onnx-node",
   ].filter(Boolean);
 
@@ -39,7 +54,8 @@ function resolveSherpa() {
   console.error(
     "[x] 找不到 sherpa-onnx-node。\n" +
       "    请执行 npm i sherpa-onnx-node，\n" +
-      "    或用环境变量 SHERPA_ONNX_NODE 指定它的目录。"
+      "    或用环境变量 SHERPA_ONNX_NODE 指定它的目录。\n" +
+      "    也可以跑 python tools/setup-sherpa.py 看看都探测了哪些位置。"
   );
   process.exit(1);
 }

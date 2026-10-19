@@ -19,6 +19,14 @@
   <section class="panel">
     <h2>新建转写</h2>
     <form id="form">
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <strong>把视频或音频拖到这里</strong>
+        <span>mp4 / mkv / webm / mov / mp3 / wav / m4a / flac 等，单个上限 8 GB</span>
+        <span class="pick">或点击选择文件</span>
+      </div>
+      <input type="file" id="filepicker" accept="video/*,audio/*" multiple hidden>
+      <div id="upload-note" class="note"></div>
+
       <label class="field">
         <span>视频链接或本地文件</span>
         <input id="source" type="text" placeholder="https://... 或 D:\videos\a.mp4" autocomplete="off">
@@ -27,7 +35,7 @@
       <div class="row">
         <label class="field">
           <span>输出名</span>
-          <input id="name" type="text" placeholder="留空自动生成" autocomplete="off">
+          <input id="name" type="text" placeholder="留空 = 用视频标题（与 CLI 一致）" autocomplete="off">
         </label>
         <label class="field narrow">
           <span>引擎</span>
@@ -67,6 +75,22 @@
     </div>
   </section>
 
+  <!-- 本地模型服务 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>本地模型服务</h2>
+      <span id="llm-state" class="hint">查询中……</span>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="keep-server">
+      <span>常驻：批量摘要 / 翻译时不要每次重新加载模型</span>
+    </label>
+    <div class="actions">
+      <button id="stop-llm" class="ghost" type="button">停掉服务</button>
+      <span class="hint">llama-server 监听 127.0.0.1:8080，只有摘要 / 翻译 / 问答用到</span>
+    </div>
+  </section>
+
 </main>
 
 <template id="job-tpl">
@@ -77,6 +101,7 @@
       <span class="job-name"></span>
       <span class="job-time"></span>
       <button class="cancel ghost" type="button">取消</button>
+      <button class="delete ghost" type="button">删除</button>
     </div>
     <div class="bar"><i></i></div>
     <div class="job-detail"></div>

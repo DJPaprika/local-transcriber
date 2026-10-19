@@ -20,36 +20,52 @@
 
 ## 二、现在什么状态
 
-代码已全部提交并推送，`main` 与远端同步。
+**六项待办已全部实现，改动还在工作区，没有提交、也没有推送**（这一轮约定不提交）。
 
-| 提交 | 内容 |
+已用真实链路验证：38 项自动化断言全过（上传/转写/下载/删除/取消/设置/pid/CLI 自动探测），
+外加一次 YouTube URL 端到端——CLI 与 UI 产出同名同目录。
+
+| 提交 / 改动 | 内容 |
 |---|---|
-| `557500a` | 摘要提示词补细节与防幻觉约束；超长素材分段兜底；附调优记录 |
-| `7f8835a` | 输出名改用视频标题；修复清 `.work` 后再 stat 崩溃；UI 相对路径按 `output/` 解析 |
-| `7a4f255` | 输出名推导支持 Windows 反斜杠路径 |
-| `8cf98bb` | `run.cmd` 改用 CRLF + ASCII |
+| `681ab98` | 交接文档（已提交，未推送） |
+| 本工作区改动 | 下表六项 + 文档同步 |
 
-**能用的**：CLI 转写 / 翻译 / 摘要 / 问答，Web UI 全流程。
+| # | 原来的问题 | 现在 |
+|---|---|---|
+| 1 | 跑 CLI 必须手设 `SHERPA_ONNX_NODE` | 自动探测（项目 / 全局 npm / DSH 依赖树），`tools/setup-sherpa.py` 可检查、可 `--persist` |
+| 2 | UI 产物叫 `BV1SRnJ6fEzE`，CLI 叫视频标题 | 命名交给 `transcribe.py`，UI 与 CLI 同名同目录 |
+| 3 | 只能取消，不能从列表删除 | `DELETE /api/jobs/{id}` + 卡片上的「删除」 |
+| 4 | 只能贴链接或填路径 | 拖拽 / 点选上传，8 GB 上限，自动排队 |
+| 5 | 每次摘要/翻译都重新加载模型 | `keep_server` 开关 + pid 文件 + 「停掉服务」 |
+| 6 | 要自己装 llama.cpp 和模型 | `tools/prepare-llm.py --download` 一条命令 |
+
+**能用的**：CLI 转写 / 翻译 / 摘要 / 问答，Web UI 全流程（上传、进度、下载、删除、常驻）。
 **产物**：`output/` 下四组成品（案件解说、经济评论、开箱视频、40 秒片段），都带 summary。
-**测试素材已删**：`samples/` 里的 `yt-demo.webm`、`clip40.wav` 已清理（19.7 MB），要测自己找素材。
 
 ---
 
 ## 三、怎么跑起来
 
-### 3.1 先设一个环境变量（最容易漏的一步）
+### 3.1 依赖自检（最容易漏的一步）
 
 ```powershell
-$env:SHERPA_ONNX_NODE = "C:\Users\13414\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\sherpa-onnx-node"
+python tools/setup-sherpa.py
 ```
 
-**不设这个，SenseVoice 引擎直接报「找不到 sherpa-onnx-node」**。项目里没有 `node_modules`，
-`require("sherpa-onnx-node")` 也找不到它——它现在挂在 DSH 的依赖树里。
+它检查 node、`sherpa-onnx-node`、SenseVoice 模型三样东西，并打印探测到的路径。
+**探测顺序**：`SHERPA_ONNX_NODE` → 项目 `node_modules` → 全局 npm 根 →
+DSH 的依赖树（`%APPDATA%\npm\node_modules\@deepseek-ai\dsh\node_modules`）。
 
-`web\run.cmd` 里已经把这一行写进去了，所以走 UI 不受影响；**走 CLI 必须自己设**。
+所以正常情况下**什么都不用设**。想固化下来：
 
-> 长期建议：把 `SHERPA_ONNX_NODE` 设为用户级环境变量，或者 `npm i sherpa-onnx-node` 装到项目里。
-> 这是当前可用性最差的一处。
+```powershell
+python tools/setup-sherpa.py --persist   # setx，写用户级环境变量
+```
+
+`transcribe.py` 启动时也会自己找一次，找到就写回 `SHERPA_ONNX_NODE`；
+`bridge/sv-bridge.js` 里有同样的候选列表，直接跑 Node 桥时也能命中。
+
+> `web/run.cmd` 里**不再硬编码**任何绝对路径，只负责 `cd` 到项目根再起服务。
 
 ### 3.2 常用命令
 
@@ -60,14 +76,15 @@ cd D:\workspace\local-transcriber
 python transcribe.py "https://www.bilibili.com/video/BVxxxx"
 python transcribe.py "D:\path\to\video.mp4" -o output -n 自定义名字
 
-# 摘要
-python translate.py output\xxx\xxx.txt --task summary
+# 摘要 / 翻译 / 问答（默认输出在源文件旁边）
+python translate.py output\xxx.txt --task summary
+python translate.py output\xxx.srt                  # → xxx.zh.srt
+python translate.py output\xxx.txt --task ask -q "作者的核心观点是什么"
 
-# 翻译字幕（保留时间轴，输出 xxx.zh.srt）
-python translate.py output\xxx\xxx.srt
-
-# 针对内容提问
-python translate.py output\xxx\xxx.txt --task ask -q "作者的核心观点是什么"
+# 依赖准备
+python tools/setup-sherpa.py            # SenseVoice 三件套
+python tools/prepare-llm.py             # llama.cpp + GGUF 检查
+python tools/prepare-llm.py --download  # 缺什么下什么（~4.5 GB）
 ```
 
 ### 3.3 起 Web UI
@@ -79,7 +96,8 @@ python web\serve.py          # 从 8081 开始找空闲端口，自动开浏览�
 python web\serve.py --no-browser
 ```
 
-页面上可以贴链接转写、看实时进度和日志、下载 srt/txt、一键摘要/翻译。任务是串行的。
+页面上可以：拖文件或贴链接 → 看实时进度和日志 → 下载 srt/txt → 一键摘要/翻译；
+任务可取消、可删除；「本地模型服务」面板能设常驻、能停服务。任务是串行的。
 
 ---
 
@@ -95,13 +113,16 @@ engines/               两个引擎的统一接口
 bridge/sv-bridge.js    Node 桥：sherpa-onnx → 字符级时间戳 JSON
 llm/
   client.py            llama-server 的 OpenAI 兼容客户端（标准库 urllib）
-  server.py            llama-server 惰性启停
+  server.py            llama-server 惰性启停 + pid 文件
   tasks.py             三套提示词 + 翻译/摘要/问答实现
 web/
-  serve.py             http.server 路由 + 静态文件
-  jobs.py              串行任务队列
-  static/              原生 JS 单页
+  serve.py             http.server 路由 + 静态文件 + 上传/设置/LLM 接口
+  jobs.py              串行任务队列、产物定位、删除
+  static/              原生 JS 单页（拖拽上传、删除、常驻开关）
   run.cmd              一键启动
+tools/
+  setup-sherpa.py      SenseVoice 依赖检查 / 持久化环境变量
+  prepare-llm.py       llama.cpp + 模型检查 / 下载
 docs/
   webui-plan.md        Web UI 选型与接口设计
   summary-experiments.md  摘要调优记录（很有参考价值，见第七节）
@@ -120,7 +141,9 @@ URL/文件 ─→ acquire_source() ─→ media 文件 + 标题
 拿不到才退回文件名 / URL 推导。所以 B 站视频会存成
 `output\苏联卫国战争胜利纪念口粮.srt` 而不是 `output\BV1HVnn62ELQ.srt`。
 
-中间文件都放 `output\.work\`，跑完自动删（`--keep-audio` 可保留）。
+Web UI 走的是同一条路：不填输出名时，`jobs.py` 不传 `-n`，产物直接落在
+`output/` 根目录，和 CLI 完全一致。中间文件都放 `output\.work\`，跑完自动删
+（`--keep-audio` 可保留）。
 
 ---
 
@@ -133,15 +156,19 @@ URL/文件 ─→ acquire_source() ─→ media 文件 + 标题
 | 子进程输出写文件不写管道 | 受限环境可能拒绝创建管道；写文件照样能增量读 |
 | SenseVoice 时间戳要加段偏移 | VAD 分段识别，`seg.start` 是**采样点编号**不是秒，`绝对时间 = seg.start/16000 + token.timestamp`，漏一半整条时间轴错位 |
 | 翻译按批不逐条 | 几百条字幕逐条调模型就是几百次请求；按编号批处理，条数对不上先重试、再不行整批退回原文——宁可原文，不能让时间轴错位 |
-| LLM 惰性启停 | 常驻占 4 GB+ 显存；已有服务则复用不动它 |
+| LLM 惰性启停 | 常驻占 4 GB+ 显存；已有服务则复用不动它。需要批量处理时用 Web 的常驻开关 |
 | 任务队列串行 | SenseVoice 吃满 CPU，显存只够一个 llama-server |
+| Web 不推导输出名 | 名字由 `transcribe.py` 决定，UI 和 CLI 才不会各叫各的 |
+| 上传发原始字节，不用 multipart | 标准库就能写，不需要 `cgi`（Python 3.13 已移除）；边读边写盘，不把大文件整个读进内存 |
+| 下载用 RFC 5987 文件名 | HTTP 头只能 latin-1，中文标题必须 `filename*=UTF-8''...`，否则直接 500 |
 
 ---
 
 ## 六、已知的坑
 
-### 6.1 跑 CLI 前必须设 `SHERPA_ONNX_NODE`
-见 3.1。不设就是硬失败。
+### 6.1 `SHERPA_ONNX_NODE` 已经不是硬要求
+自动探测覆盖了项目内、全局 npm、DSH 依赖树三种情况。只有装在奇怪位置时才需要
+`--persist` 或手动设环境变量。
 
 ### 6.2 `yt-dlp` 在受限沙箱里起不来
 它是 PyInstaller 单文件程序，解包要写临时目录，沙箱下报：
@@ -151,6 +178,10 @@ URL/文件 ─→ acquire_source() ─→ media 文件 + 标题
 ```
 
 需要提权/放宽沙箱才能下载。纯本地文件输入不受影响。
+
+2026-10-20 用 DSH 自带的 `windows-acl` runner 在 `workspace-write` 下复测，同样的报错
+原样复现，不是版本问题。同一次测试里 `node`、`ffmpeg`、`python` 都能在受限模式下
+正常启动——只有「自解包到 temp」这一类程序不行。
 
 ### 6.3 `git push` 需要 `-c http.sslBackend=openssl`
 这台机器上 schannel 后端连不上 GitHub：
@@ -163,12 +194,10 @@ git -c http.sslBackend=openssl push origin main
 用 LF 换行或中文注释，cmd 会把整个文件当一行读，报出莫名其妙的
 `'p0。"' 不是内部或外部命令`。`web\run.cmd` 已经是 CRLF + 纯 ASCII，改的时候别破坏。
 
-### 6.5 Web UI 下输出名和 CLI 不一致
-`web/jobs.py` 的 `_build_cmd()` 给 `transcribe.py` 传了 `-n p["name"]`，而 `name` 是
-`serve.py` 的 `_derive_name(URL)` 从链接里抠出来的（BV 号之类）。**所以走 UI 出来的目录
-叫 `BV1SRnJ6fEzE`，不是视频标题**——标题命名只在 CLI 路径生效。
-
-要修的话：让 `serve.py` 不传 `-n`，或者把推导逻辑改成"转完之后再用标题重命名"。
+### 6.5 Web UI 下输出名和 CLI 不一致 —— 已修复
+现在 `serve.py` 不再推导名字，`jobs.py` 也不传 `-n`；产物由 `transcribe.py`
+按标题命名，直接落在 `output/` 根目录。摘要/翻译也改用 `translate.py` 的默认命名，
+和源文件同目录同前缀，不会再出现 `xxx.zh.zh.srt` 这种重复后缀。
 
 ### 6.6 网络不稳
 GitHub、B 站、YouTube 都会间歇性超时（`Failed to connect ... after 21s`、
@@ -179,10 +208,72 @@ yt-dlp --no-check-certificates --proxy http://127.0.0.1:7890 <url>
 ```
 
 机器上 Clash 监听 `127.0.0.1:7890`（系统 ProxyEnable 是关的）。
+`tools/prepare-llm.py` 下载时用 `--proxy http://127.0.0.1:7890`。
+
+**B 站不登录也能下**（2026-10-20 实测）：普通视频最高到 1080p，4K / 1080P60 才需要
+大会员 cookies。偶尔会报 `No video formats found!`，那是风控瞬时拒绝，
+**重试通常就好**——同一个 BV 号第一次失败、第二次列出全部格式，完整跑通
+8 分 37 秒视频：下载 3 s + 转写 114 s（4.53× 实时）。
+
+**YouTube 走代理要设环境变量**，因为 `transcribe.py` 调 yt-dlp 时不传 `--proxy`：
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+python transcribe.py "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+```
+
+实测 19 秒视频：下载 7.8 s + 转写 1.5 s → `output\Me_at_the_zoo.srt`
+（标题 `Me at the zoo`，空格被 safe_stem 换成下划线）。
 
 ### 6.7 取消任务时可能杀不干净
 `jobs.py` 的 `_kill_tree()` 先 `taskkill /T /F`，被拒（低完整性沙箱会 Access denied）
 再退回 `proc.kill()`。后者杀不掉孙进程，node bridge 和 ffmpeg 可能变孤儿。
+
+Web 的「停掉服务」同理：`_kill_pid()` 先 `taskkill`、再 `os.kill`，两者都失败会返回
+`ok: false` 并在页面上弹出来，不会假装已经停掉。
+
+2026-10-20 实测（`workspace-write`）：`taskkill /T /F` 返回码 1，`os.kill(pid, SIGTERM)`
+抛 `WinError 5`，子进程仍然活着。同一模式下的管道也一样：`os.pipe()`、
+`subprocess(..., capture_output=True)`、`Popen(stdout=PIPE)` 全部 `WinError 5`。
+完整对照见 6.10。
+
+### 6.8 中文文件名曾让下载 500（已修复，但要知道原因）
+`Content-Disposition` 只能用 latin-1。输出名变成视频标题后，直接塞中文会抛
+`UnicodeEncodeError`。现在的写法是 ASCII 兜底名 + `filename*=UTF-8''<percent-encoded>`，
+新增下载接口时别退回去。
+
+### 6.9 上传是同步读取，没有断点续传
+`POST /api/upload` 边读 `Content-Length` 边写盘，超过 8 GB 直接 413。
+传到一半断开，服务端会把半截文件删掉，但前端要重新传。
+文件落在 `output\.uploads\<时间戳>-<随机>\`，不会自动清理。
+
+### 6.10 沙箱实测（2026-10-20）
+
+用 DSH 自带的 `dsh-sandbox-windows-acl` runner 手动拉起受限进程，跑同一套探针，
+三组对照。`全权限` 的进程完整性是 High，两种受限模式都是 Low。
+
+| 能力 | 全权限 | workspace-write | read-only |
+|---|---|---|---|
+| 写 workspace | ✅ | ✅ | ❌ |
+| 写 workspace 外 | ✅ | ❌ | ❌ |
+| 写私有 temp | ✅ | ✅ | ❌ |
+| 写 `C:\Windows\Temp` | ✅ | ❌ | ❌ |
+| 读系统文件 | ✅ | ✅ | ✅ |
+| `os.pipe` / `subprocess(capture_output)` | ✅ | ❌ `WinError 5` | ✅ |
+| 命名管道 listener | ✅ | ✅ | ✅ |
+| 外网 TCP | ✅ | ✅ | ✅ |
+| `taskkill /T /F` | ✅ rc=0 | ❌ rc=1 | ❌ rc=1 |
+| `os.kill(SIGTERM)` | ✅ | ❌ `WinError 5` | ❌ |
+| 删除 workspace 内 | ✅ | ✅ | ❌ |
+| 符号链接 | ✅ | ❌ `WinError 1314` | ❌ |
+| 注册表 HKCU 写 | ✅ | ❌ `WinError 5` | ❌ |
+| `yt-dlp`（PyInstaller） | ✅ | ❌ `PYI: Failed to create parent directory` | 未测 |
+
+全权限下唯一失败的是 **>260 字符长路径**，那是 Windows `MAX_PATH`，与沙箱无关。
+
+结论：沙箱只拦写/删，不拦读、网络、进程可见性。这解释了项目里三处看起来「过于保守」的写法——
+子进程输出写文件不写管道、取消要 `taskkill` + `proc.kill` 双保险、停 LLM 服务可能返回失败——
+它们都是被这个边界逼出来的。
 
 ---
 
@@ -215,19 +306,21 @@ yt-dlp --no-check-certificates --proxy http://127.0.0.1:7890 <url>
 - SenseVoice 只支持中/粤/英/日/韩
 - Whisper 的 encoder 跑在 CPU 上，长音频慢
 - 短素材（<1 分钟）容易过度解读，会补原文没有的推断
+- 问答（`ask`）的结果只写进任务日志，UI 里没有单独的结果卡片
 
 ---
 
 ## 八、待办
 
-按优先级：
+这一轮的六项已经做完。往后可以做的，按价值排：
 
-1. **`SHERPA_ONNX_NODE` 落地**：设为用户级环境变量，或写进项目 README 的快速开始——现在是最大的上手障碍。
-2. **统一 UI 和 CLI 的输出命名**：见 6.5，让 UI 也走标题命名。
-3. **删除任务功能**：UI 现在只能取消，不能从列表里删。
-4. **拖拽上传**：现在只能贴链接或手填路径。
-5. **llama-server 常驻开关**：批量处理时反复启停模型，加载成本浪费。
-6. **llama-server 一键准备**：现在要用户自己装 llama.cpp 和模型。
+1. **上传断点续传 / 上传取消**：现在大文件传一半断了只能重传
+2. **删除任务时可选删产物**：目前只删记录，字幕留在 `output/`
+3. **问答结果进 UI**：`ask` 现在只把答案打在日志里
+4. `.uploads` 定期清理：上传的原文件会一直堆着
+5. **llama-server 日志落盘**：现在是 `DEVNULL`，启动失败时只有「立刻退出」一句
+6. **llama-server 常驻的持久化**：服务重启后 pid 文件还在，但进程可能已经不在；
+   状态探测按端口判断，这点已经兼容
 
 ---
 

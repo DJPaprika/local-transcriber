@@ -61,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ctx", type=int, default=32768, help="上下文长度（长文本摘要建议 ≥32768）")
     p.add_argument("--keep-server", action="store_true", help="跑完不关闭本次启动的服务")
     p.add_argument("--no-start", action="store_true", help="假定服务已在运行，不尝试启动")
+    p.add_argument(
+        "--pid-file",
+        default=str(Path(__file__).resolve().parent / "output" / ".jobs" / "llama-server.pid"),
+        help="记录 llama-server 的 pid（Web UI 用来停常驻服务）；传空串则不写",
+    )
     p.add_argument("--limit", type=int, default=0, help="只处理前 N 条字幕（调试用，0=全部）")
     args = p.parse_args(argv)
 
@@ -77,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     server = LlamaServer(
         exe=Path(args.server), model=Path(args.model),
         port=args.port, ngl=args.ngl, ctx=args.ctx,
+        pid_file=Path(args.pid_file) if args.pid_file else None,
     )
 
     if args.no_start:

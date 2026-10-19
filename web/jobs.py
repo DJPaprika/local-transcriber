@@ -7,11 +7,14 @@
   进度从 .progress.json 读。这样父子之间没有 pipe，Windows 上也不会踩到手柄问题。
 - **能杀干净**：取消时在 Windows 上用 `taskkill /T /F` 杀整棵进程树，
   否则 node bridge、ffmpeg 会变成孤儿继续占 CPU。
+- **输出命名交给 transcribe.py**：不再由 Web 层猜名字，所以 UI 和 CLI 产出的
+  都是「视频标题」，落在同一个 output/ 目录里。
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -32,12 +35,15 @@ KIND_LABEL = {
 
 TERMINAL = {"done", "failed", "cancelled"}
 
+SETTINGS_DEFAULT = {"keep_server": False}
+
 
 class JobManager:
     def __init__(self, out_root: Path):
         self.out_root = out_root
         self.jobs_dir = out_root / ".jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.settings_path = self.jobs_dir / "settings.json"
 
         self._lock = threading.Lock()
         self._jobs: dict[str, dict] = {}
@@ -46,6 +52,7 @@ class JobManager:
         self._current: str | None = None
         self._proc: subprocess.Popen | None = None
         self._cancelled: set[str] = set()
+        self._settings = self._load_settings()
 
         self._wake = threading.Event()
         self._load_history()
@@ -69,6 +76,31 @@ class JobManager:
             self._jobs[jid] = data
             self._order.append(jid)
         self._order.sort(key=lambda j: self._jobs[j].get("created_at", 0))
+
+    def _load_settings(self) -> dict:
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return dict(SETTINGS_DEFAULT)
+        return {**SETTINGS_DEFAULT, **{k: data[k] for k in SETTINGS_DEFAULT if k in data}}
+
+    def get_settings(self) -> dict:
+        with self._lock:
+            return dict(self._settings)
+
+    def update_settings(self, patch: dict) -> dict:
+        with self._lock:
+            for key in SETTINGS_DEFAULT:
+                if key in patch:
+                    self._settings[key] = bool(patch[key])
+            data = dict(self._settings)
+        try:
+            self.settings_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        return data
 
     def _job_dir(self, jid: str) -> Path:
         d = self.jobs_dir / jid
@@ -104,6 +136,7 @@ class JobManager:
             "result": None,
             "error": None,
         }
+        self._job_dir(jid)
         with self._lock:
             self._jobs[jid] = job
             self._order.append(jid)
@@ -135,6 +168,23 @@ class JobManager:
             proc = self._proc
             self._cancelled.add(jid)
         self._kill_tree(proc)
+        return True
+
+    def delete(self, jid: str) -> bool:
+        """从列表里删掉一个已结束的任务（连同它的日志目录）。
+
+        正在跑的不让删——要删先取消，避免状态和真实进程脱节。
+        产物文件不动：用户可能还想留着字幕，删任务不该顺手删内容。
+        """
+        with self._lock:
+            job = self._jobs.get(jid)
+            if job is None or job["status"] not in TERMINAL:
+                return False
+            self._jobs.pop(jid, None)
+            if jid in self._order:
+                self._order.remove(jid)
+            self._queue = deque(x for x in self._queue if x != jid)
+        shutil.rmtree(self.jobs_dir / jid, ignore_errors=True)
         return True
 
     def snapshot(self, jid: str, log_offset: int = 0) -> dict | None:
@@ -195,60 +245,50 @@ class JobManager:
                         job["finished_at"] = time.time()
                     self._save(job)
 
+    def _resolve_input(self, rel: str) -> Path:
+        """前端给的是相对 output/ 的路径（如 clip40/clip40.txt），
+        直接交给 translate.py 会按当前工作目录解析，落到项目根下就找不到了。"""
+        p = Path(rel).expanduser()
+        return p if p.is_absolute() else self.out_root / p
+
     def _build_cmd(self, job: dict) -> list[str]:
         p = job["params"]
         kind = job["kind"]
-        outdir = self.out_root / p["name"]
 
         if kind == "transcribe":
+            # 不给 -n 时由 transcribe.py 自己推导（URL 用视频标题，本地文件用文件名），
+            # 这样 Web UI 和 CLI 的产物命名一致。
             cmd = [
                 PY, str(ROOT / "transcribe.py"), p["source"],
-                "-o", str(outdir),
-                "-n", p["name"],
+                "-o", str(self.out_root),
                 "-e", p.get("engine", "sensevoice"),
                 "-l", p.get("language", "auto"),
                 "--progress", str(self.jobs_dir / job["id"] / "progress.json"),
             ]
+            if (p.get("name") or "").strip():
+                cmd += ["-n", p["name"].strip()]
             if p.get("keep_audio"):
                 cmd.append("--keep-audio")
             return cmd
 
-        # 摘要 / 翻译 / 问答的输入：前端给的是相对 output/ 的路径（如 clip40/clip40.txt），
-        # 直接交给 translate.py 会按当前工作目录解析，落到项目根下就找不到了。
-        inp = Path(p["input"]).expanduser()
-        if not inp.is_absolute():
-            inp = self.out_root / inp
-        src = str(inp)
-
+        cmd = [PY, str(ROOT / "translate.py"), str(self._resolve_input(p["input"]))]
         if kind == "translate":
-            return [
-                PY, str(ROOT / "translate.py"), src,
-                "--task", "translate",
-                "--target", p.get("target", "简体中文"),
-                "-o", str(outdir / f"{p['name']}.zh.srt"),
-            ]
+            cmd += ["--task", "translate", "--target", p.get("target", "简体中文")]
+        elif kind == "summary":
+            cmd += ["--task", "summary"]
+        else:  # ask
+            cmd += ["--task", "ask", "-q", p["question"]]
 
-        if kind == "summary":
-            return [
-                PY, str(ROOT / "translate.py"), src,
-                "--task", "summary",
-                "-o", str(outdir / f"{p['name']}.summary.md"),
-            ]
-
-        return [
-            PY, str(ROOT / "translate.py"), src,
-            "--task", "ask", "-q", p["question"],
-        ]
+        # 常驻开关：批量跑摘要/翻译时不要每个任务都重新加载模型。
+        if self.get_settings().get("keep_server"):
+            cmd.append("--keep-server")
+        return cmd
 
     def _execute(self, job: dict) -> None:
         jid = job["id"]
         jdir = self._job_dir(jid)
         log_path = jdir / "job.log"
         cmd = self._build_cmd(job)
-
-        if job["kind"] != "transcribe":
-            # 让 translate.py 的输出目录存在
-            (self.out_root / job["params"]["name"]).mkdir(parents=True, exist_ok=True)
 
         with log_path.open("wb") as logf:
             logf.write(("$ " + " ".join(cmd) + "\n\n").encode("utf-8"))
@@ -287,16 +327,56 @@ class JobManager:
                 job["error"] = self._tail_error(log_path)
         self._save(job)
 
+    # ------------------------------------------------------------ 产物
+
+    def _rel_dir(self, d: Path) -> str:
+        """把产物目录转成相对 output/ 的 POSIX 路径（空串表示 output 根）。"""
+        try:
+            rel = d.resolve().relative_to(self.out_root.resolve())
+        except (ValueError, OSError):
+            return d.as_posix()
+        return "" if str(rel) == "." else rel.as_posix()
+
+    @staticmethod
+    def _file_entry(f: Path) -> dict:
+        return {"name": f.name, "size": f.stat().st_size}
+
+    def _transcribe_outputs(self, job: dict) -> tuple[list[dict], Path]:
+        """转写产物按 progress.json 里记录的真实路径找，名字可能是视频标题。"""
+        prog = self.read_progress(job["id"]) or {}
+        srt = prog.get("srt")
+        if srt:
+            srt_path = Path(srt)
+            d, stem = srt_path.parent, srt_path.stem
+        else:
+            # 理论上不会走到；兜底用提交时的名字。
+            name = (job["params"].get("name") or "").strip() or job["id"]
+            d, stem = self.out_root, name
+
+        files = []
+        for suffix in (".srt", ".txt", ".stats.json"):
+            f = d / f"{stem}{suffix}"
+            if f.is_file():
+                files.append(self._file_entry(f))
+        return files, d
+
+    def _llm_outputs(self, job: dict) -> tuple[list[dict], Path]:
+        """摘要 / 翻译沿用 translate.py 的默认命名：和源文件同目录同前缀。"""
+        src = self._resolve_input(job["params"]["input"])
+        suffix = ".summary.md" if job["kind"] == "summary" else ".zh.srt"
+        out = src.with_suffix(suffix)
+        files = [self._file_entry(out)] if out.is_file() else []
+        return files, out.parent
+
     def _collect_result(self, job: dict) -> dict:
-        p = job["params"]
-        outdir = self.out_root / p["name"]
-        result: dict = {"files": []}
-        if outdir.is_dir():
-            for f in sorted(outdir.iterdir()):
-                if f.is_file() and not f.name.startswith("."):
-                    result["files"].append(
-                        {"name": f.name, "size": f.stat().st_size}
-                    )
+        if job["kind"] == "transcribe":
+            files, d = self._transcribe_outputs(job)
+        elif job["kind"] in ("summary", "translate"):
+            files, d = self._llm_outputs(job)
+        else:
+            files, d = [], self.out_root
+
+        result: dict = {"files": files, "dir": self._rel_dir(d)}
         prog = self.read_progress(job["id"])
         if prog:
             result.update(

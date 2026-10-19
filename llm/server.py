@@ -31,6 +31,7 @@ class LlamaServer:
         ngl: int = 24,
         ctx: int = 8192,
         ready_timeout: float = 180.0,
+        pid_file: Path | None = None,
     ):
         self.exe = Path(exe)
         self.model = Path(model)
@@ -38,6 +39,7 @@ class LlamaServer:
         self.ngl = ngl
         self.ctx = ctx
         self.ready_timeout = ready_timeout
+        self.pid_file = Path(pid_file) if pid_file else None
         self.proc: subprocess.Popen | None = None
         self._owned = False
 
@@ -76,6 +78,7 @@ class LlamaServer:
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         self._owned = True
+        self._write_pid()
 
         t0 = time.time()
         while time.time() - t0 < self.ready_timeout:
@@ -103,6 +106,27 @@ class LlamaServer:
             self.proc.kill()
         self.proc = None
         self._owned = False
+        self._clear_pid()
+
+    # ---------------------------------------------------------------- pid 文件
+    # 常驻模式下进程要活过 translate.py，得把 pid 留下来，Web UI 才知道怎么停。
+
+    def _write_pid(self) -> None:
+        if self.pid_file is None or self.proc is None:
+            return
+        try:
+            self.pid_file.parent.mkdir(parents=True, exist_ok=True)
+            self.pid_file.write_text(str(self.proc.pid), encoding="ascii")
+        except OSError:
+            pass
+
+    def _clear_pid(self) -> None:
+        if self.pid_file is None:
+            return
+        try:
+            self.pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # ---------------------------------------------------------------- 上下文
 

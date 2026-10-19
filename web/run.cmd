@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0.."
 
-if "%SHERPA_ONNX_NODE%"=="" set "SHERPA_ONNX_NODE=C:\Users\13414\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\sherpa-onnx-node"
-
+rem SHERPA_ONNX_NODE is located automatically by transcribe.py and the Node
+rem bridge. Run "python tools\setup-sherpa.py" to check that it is found.
 python web\serve.py
 if errorlevel 1 pause

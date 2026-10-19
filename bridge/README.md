@@ -80,11 +80,14 @@ circular-buffer.cc: Overflow! (Original data is copied. No data loss!)
 
 ## 依赖定位
 
-不用环境变量也能跑，前提是依赖在旁边；否则按这个顺序找：
+按这个顺序找，前面命中就停：
 
 | 依赖 | 查找顺序 |
 |---|---|
-| `sherpa-onnx-node` | `SHERPA_ONNX_NODE` → `../node_modules/` → `./node_modules/` → 常规解析 |
+| `sherpa-onnx-node` | `SHERPA_ONNX_NODE` → `../node_modules/` → `./node_modules/` → `%APPDATA%\\npm\\node_modules\\sherpa-onnx-node` → DSH 依赖树 → 常规解析 |
+
+`transcribe.py` 会把找到的路径写回 `SHERPA_ONNX_NODE`，所以从 Python 调过来时
+通常第一步就命中；直接 `node sv-bridge.js` 时靠后面的兜底。
 | 模型 | `SENSEVOICE_MODEL_DIR` → `~/.dsh/speech-to-text/sensevoice/models` → `../models/` |
 
 模型目录结构：

@@ -35,7 +35,8 @@ output/transcript.stats.json   本次运行的完整耗时
 | **自动取流** | 给 URL 就自己下载，给本地文件就直接用 |
 | **统一结构** | 两个引擎产出同一种 `Transcript`，上层不用区分 |
 | **本地 LLM** | 翻译 / 摘要 / 问答，llama.cpp + Vulkan，AMD 显卡可用 |
-| **惰性启停** | LLM 按需拉起、用完释放显存；已有服务则直接复用 |
+| **惰性启停** | LLM 按需拉起、用完释放显存；已有服务则直接复用，也可设为常驻 |
+| **Web UI** | 零依赖的浏览器界面：拖拽上传、实时进度、任务管理、一键摘要/翻译 |
 | **耗时拆分** | 把模型加载这种一次性成本单独拆出来，避免短样本测出误导性数字 |
 | **零 pip 依赖** | 引擎编排与 LLM 调用全部只用 Python 标准库 |
 
@@ -59,11 +60,21 @@ output/transcript.stats.json   本次运行的完整耗时
 ```bash
 # 1. 装 ffmpeg 并确保在 PATH 里
 # 2. 准备 SenseVoice 模型（目录结构见下）
-# 3. 安装 sherpa-onnx-node
+# 3. 安装 sherpa-onnx-node（装在项目里或全局都行，程序会自动找）
 npm install sherpa-onnx-node
 
-# 4. 跑
+# 4. 检查依赖是否都找得到
+python tools/setup-sherpa.py
+
+# 5. 跑
 python transcribe.py video.mp4
+```
+
+`sherpa-onnx-node` 的探测顺序是：环境变量 `SHERPA_ONNX_NODE` → 项目内
+`node_modules` → 全局 npm 根 → DSH 的依赖树。想把它固化成用户级环境变量：
+
+```bash
+python tools/setup-sherpa.py --persist
 ```
 
 SenseVoice 模型目录要求：
@@ -112,6 +123,15 @@ python translate.py output/talk.txt --task ask -q "作者的核心论点是什�
 llama.cpp 从[官方 releases](https://github.com/ggml-org/llama.cpp/releases) 下载 `llama-*-bin-win-vulkan-x64.zip`
 （Vulkan 版对 AMD/NVIDIA/Intel 通用，解压即用，无需装 ROCm）。
 
+懒得手动找版本、下模型的话：
+
+```bash
+python tools/prepare-llm.py            # 先检查缺什么
+python tools/prepare-llm.py --download # 缺什么下什么（llama.cpp + Qwen2.5-7B q4_k_m）
+```
+
+国内网络可以加 `--proxy http://127.0.0.1:7890`。
+
 ---
 
 ## Web UI
@@ -124,9 +144,13 @@ python web/serve.py
 
 它会从 8081 开始找一个空闲端口，然后自动打开浏览器。页面上可以：
 
-- 贴视频链接或本机路径，选引擎和语言，点「开始转写」
+- 贴视频链接、填本机路径，或直接把音视频文件拖进页面（自动上传并排队）
 - 实时看进度条和完整日志
 - 完成后直接下载 `.srt` / `.txt`，或一键「生成摘要」「翻译成中文」
+- 任务可以取消、也可以从列表删除（只删记录，不删产物）
+- 本地模型服务可以设成常驻，批量跑摘要/翻译时不用反复加载模型
+
+产物命名和 CLI 完全一致：走 UI 也是「视频标题」，直接落在 `output/` 下。
 
 任务是**串行**的（SenseVoice 会吃满 CPU，显存也只够一个 llama-server），
 其余排队显示「排队中」。
@@ -277,7 +301,7 @@ Whisper 把音频切成 30 秒窗口，**每个窗口都要完整跑一遍 encod
 | **翻译依赖 LLM 输出格式** | 偶尔少回或合并条目 | 已有重试与兜底 |
 | **摘要会误判正常表达为错字** | 7B 能力边界，`temperature 0` 下稳定复现 | 示例里原样标注，人工过一眼 |
 | **多人对话会串说话人** | 转写稿无说话人标记，靠上下文推断 | 提示词要求标注归属，仍偶有串位 |
-| **llama-server 需自行准备** | 翻译前要先装 llama.cpp 与模型 | 后续可做一键下载 |
+| **llama-server 需自行准备** | 翻译前要先装 llama.cpp 与模型 | 已提供 `tools/prepare-llm.py --download` |
 
 ---
 
@@ -306,6 +330,7 @@ local-transcriber/
 ├── bridge/sv-bridge.js      # SenseVoice 的 Node 桥
 ├── llm/                     # 本地大模型能力
 ├── web/                     # 浏览器界面（零新增依赖，见 web/README.md）
+├── tools/                   # 依赖检查 / 一键准备（见 tools/README.md）
 ├── docs/examples/           # 真实运行的示例产物
 ├── output/                  # 运行产物（不入库）
 └── models/                  # 模型文件（不入库，也可用环境变量指向外部目录）

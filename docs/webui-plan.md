@@ -124,15 +124,23 @@ Windows 上点「取消」必须用 `taskkill /T /F` 杀掉整个进程树，
 
 | # | 问题 | 结果 |
 |---|---|---|
-| 1 | 拖拽本地文件 | ❌ **没做**。浏览器拿不到真实路径，要做就得加 multipart 接收端，这轮先填绝对路径 |
+| 1 | 拖拽本地文件 | ✅ **已做**（2026-10-20）。不做 multipart，直接 POST 原始字节 + `?name=`，服务端边读边写盘 |
 | 2 | 摘要一键触发 | ✅ 转写卡片上多了「生成摘要」「翻译成中文」两个按钮 |
 | 3 | 历史记录 | ✅ 每个任务落一个 `output/.jobs/<id>/job.json`，重启后列表还在 |
-| 4 | llama-server 常驻 | ⚠️ 还没加开关，仍然是任务结束就关 |
+| 4 | llama-server 常驻 | ✅ **已做**（2026-10-20）。Web 设置里开关 + pid 文件 + 「停掉服务」按钮 |
 | 5 | pywebview 套壳 | ❌ 按计划不做 |
 | 6 | 端口自动递增 | ✅ `find_port()` 从 8081 往上找 |
 | 7 | 自动开浏览器 | ✅ `webbrowser.open`，`--no-browser` 可关 |
 
-### 没预料到的两件事
+### 后续补上的三项（2026-10-20）
+
+- **删除任务**：`DELETE /api/jobs/{id}`，只删 `.jobs/<id>/` 和列表条目，产物保留
+- **输出命名统一**：Web 层不再推导名字，交给 `transcribe.py`（URL 用视频标题），
+  UI 与 CLI 产出同名同目录；摘要/翻译也用 `translate.py` 的默认命名
+- **中文文件名的下载**：`Content-Disposition` 只能是 latin-1，先用 ASCII 兜底名 +
+  `filename*=UTF-8''...`，否则标题里带中文时下载会 500
+
+### 没预料到的三件事
 
 **① `transcribe.py` 的进度参数不能是必选**
 
@@ -147,3 +155,9 @@ Windows 上点「取消」必须用 `taskkill /T /F` 杀掉整个进程树，
 
 加了一层兜底：`taskkill` 失败就退回 `proc.kill()`，至少让子进程退出、
 状态能落定。正常桌面环境下 `taskkill /T /F` 是能连孙进程一起清理的。
+
+**③ 中文文件名会打断下载**
+
+输出名从 BV 号改成视频标题之后，`Content-Disposition: filename="..."` 直接抛
+`UnicodeEncodeError`——HTTP 头只能用 latin-1。后来改成 ASCII 兜底 + RFC 5987 的
+`filename*=UTF-8''...`，浏览器才认得。

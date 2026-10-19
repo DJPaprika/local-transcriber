@@ -143,6 +143,43 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def locate_sherpa_node() -> str | None:
+    """找 sherpa-onnx-node 的安装目录（sensevoice 引擎需要）。
+
+    探测顺序：环境变量 → 项目内 node_modules → 全局 npm 根 → DSH 的依赖树。
+    命中后写回 SHERPA_ONNX_NODE，Node 桥和本进程的子进程都会继承。
+    """
+    explicit = os.environ.get("SHERPA_ONNX_NODE", "").strip()
+    if explicit:
+        return explicit if Path(explicit).exists() else None
+
+    root = Path(__file__).resolve().parent
+    candidates: list[Path] = [
+        root / "node_modules" / "sherpa-onnx-node",
+        root / "bridge" / "node_modules" / "sherpa-onnx-node",
+    ]
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        npm_root = Path(appdata) / "npm" / "node_modules"
+        candidates += [
+            npm_root / "@deepseek-ai" / "dsh" / "node_modules" / "sherpa-onnx-node",
+            npm_root / "sherpa-onnx-node",
+        ]
+
+    dsh_home = os.environ.get("DSH_HOME")
+    if dsh_home:
+        candidates.append(Path(dsh_home) / "node_modules" / "sherpa-onnx-node")
+
+    for cand in candidates:
+        try:
+            if (cand / "package.json").is_file() or (cand / "index.js").is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return None
+
+
 def build_engine(args: argparse.Namespace):
     if args.engine == "whisper":
         if not args.model:
@@ -154,6 +191,17 @@ def build_engine(args: argparse.Namespace):
             exe=resolve_tool("whisper-cli", args.whisper, "--whisper"),
             model=model,
             threads=args.threads,
+        )
+    found = locate_sherpa_node()
+    if found:
+        os.environ["SHERPA_ONNX_NODE"] = found
+        if not args.quiet:
+            log(f"[>>] sherpa-onnx-node: {found}")
+    else:
+        log(
+            "[!] 没找到 sherpa-onnx-node，SenseVoice 会失败。\n"
+            "    装一个：npm i sherpa-onnx-node\n"
+            "    或用 SHERPA_ONNX_NODE 指定目录（python tools/setup-sherpa.py 可检查）。"
         )
     return SenseVoiceEngine(
         node_exe=resolve_tool("node", args.node, "--node"),
@@ -336,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
         srt=str(outdir / f"{stem}.srt"),
         txt=str(outdir / f"{stem}.txt"),
         stats=str(outdir / f"{stem}.stats.json"),
+        stem=stem,
+        outdir=str(outdir),
         segments=len(transcript.segments),
         duration=round(duration, 1),
     )

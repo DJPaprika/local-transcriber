@@ -2,6 +2,9 @@ const $ = (sel) => document.querySelector(sel);
 const jobsEl = $("#jobs");
 const tpl = $("#job-tpl");
 const formError = $("#form-error");
+const dropzone = $("#dropzone");
+const uploadNote = $("#upload-note");
+const filepicker = $("#filepicker");
 
 const cache = new Map(); // id -> { job, offset, nodes }
 const KIND_LABEL = { transcribe: "转写", summary: "摘要", translate: "翻译", ask: "问答" };
@@ -30,6 +33,22 @@ function fmtSize(n) {
   return (n / 1024 / 1024).toFixed(1) + " MB";
 }
 
+// 产物目录（相对 output/）。老任务没有 result.dir，退回用提交时的名字。
+function jobDir(job) {
+  const dir = job.result && job.result.dir;
+  if (typeof dir === "string") return dir;
+  return (job.params && job.params.name) || "";
+}
+
+function relPath(job, name) {
+  const dir = jobDir(job);
+  return dir ? dir + "/" + name : name;
+}
+
+function fileUrl(job, name) {
+  return "/api/files?path=" + encodeURIComponent(relPath(job, name));
+}
+
 function ensureCard(job) {
   let c = cache.get(job.id);
   if (c) return c;
@@ -42,6 +61,7 @@ function ensureCard(job) {
     name: node.querySelector(".job-name"),
     time: node.querySelector(".job-time"),
     cancel: node.querySelector(".cancel"),
+    del: node.querySelector(".delete"),
     bar: node.querySelector(".bar"),
     fill: node.querySelector(".bar > i"),
     detail: node.querySelector(".job-detail"),
@@ -52,7 +72,21 @@ function ensureCard(job) {
   nodes.name.textContent = job.params?.name || job.params?.source || job.id;
   nodes.cancel.onclick = async () => {
     nodes.cancel.disabled = true;
-    try { await api(`/api/jobs/${job.id}/cancel`, { method: "POST" }); } catch {}
+    try { await api("/api/jobs/" + job.id + "/cancel", { method: "POST" }); } catch {}
+    poll();
+  };
+  nodes.del.onclick = async () => {
+    if (!confirm("从列表删除这条任务记录？\n字幕等产物文件不会被删除。")) return;
+    nodes.del.disabled = true;
+    try {
+      await api("/api/jobs/" + job.id, { method: "DELETE" });
+    } catch (err) {
+      alert(err.message);
+      nodes.del.disabled = false;
+      return;
+    }
+    cache.delete(job.id);
+    nodes.root.remove();
     poll();
   };
   jobsEl.prepend(node);
@@ -94,6 +128,7 @@ function paint(c) {
   }
 
   nodes.cancel.style.display = st === "queued" || st === "running" ? "" : "none";
+  nodes.del.style.display = st === "queued" || st === "running" ? "none" : "";
 
   if (st === "done") renderActions(c);
 }
@@ -102,39 +137,39 @@ function renderActions(c) {
   const { job, nodes } = c;
   nodes.actions.replaceChildren();
   const files = job.result?.files || [];
-  const base = job.params?.name || "";
+
   for (const f of files) {
     const a = document.createElement("a");
-    a.href = `/api/files?path=${encodeURIComponent(base + "/" + f.name)}`;
-    a.textContent = `↓ ${f.name} ${fmtSize(f.size)}`;
+    a.href = fileUrl(job, f.name);
+    a.textContent = "↓ " + f.name + " " + fmtSize(f.size);
     nodes.actions.appendChild(a);
   }
 
-  // 转写完成后可以一键摘要 / 翻译
+  // 转写完成后可以一键摘要 / 翻译（产物和源文件同目录、同前缀）
   if (job.kind === "transcribe") {
     const txt = files.find((f) => f.name.endsWith(".txt"));
     const srt = files.find((f) => f.name.endsWith(".srt"));
     if (txt) {
       const b = document.createElement("button");
       b.textContent = "生成摘要";
-      b.onclick = () => submitFollowUp("summary", base + "/" + txt.name, base);
+      b.onclick = () => submitFollowUp("summary", relPath(job, txt.name));
       nodes.actions.appendChild(b);
     }
     if (srt) {
       const b = document.createElement("button");
       b.textContent = "翻译成中文";
-      b.onclick = () => submitFollowUp("translate", base + "/" + srt.name, base + ".zh");
+      b.onclick = () => submitFollowUp("translate", relPath(job, srt.name));
       nodes.actions.appendChild(b);
     }
   }
 }
 
-async function submitFollowUp(kind, input, name) {
+async function submitFollowUp(kind, input) {
   try {
     await api("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, params: { input, name } }),
+      body: JSON.stringify({ kind, params: { input } }),
     });
     poll();
   } catch (err) {
@@ -152,9 +187,7 @@ async function render(list) {
   const empty = jobsEl.querySelector(".empty");
   if (empty) empty.remove();
 
-  const seen = new Set();
   for (const job of list) {
-    seen.add(job.id);
     const c = ensureCard(job);
     c.job = { ...c.job, ...job };
     paint(c);
@@ -164,7 +197,7 @@ async function render(list) {
 
 async function pullDetail(c) {
   try {
-    const snap = await api(`/api/jobs/${c.job.id}?offset=${c.offset}`);
+    const snap = await api("/api/jobs/" + c.job.id + "?offset=" + c.offset);
     c.offset = snap.log_offset || c.offset;
     if (snap.log) {
       const stick =
@@ -176,6 +209,133 @@ async function pullDetail(c) {
     paint(c);
   } catch {}
 }
+
+// ---------------------------------------------------------------- 上传 & 拖拽
+
+function uploadOne(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload?name=" + encodeURIComponent(file.name));
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || "上传失败（HTTP " + xhr.status + "）"));
+    };
+    xhr.onerror = () => reject(new Error("上传失败：网络错误"));
+    xhr.send(file);
+  });
+}
+
+async function handleFiles(files) {
+  if (!files.length) return;
+  formError.textContent = "";
+  const engine = $("#engine").value;
+  const language = $("#language").value;
+
+  for (const file of files) {
+    uploadNote.textContent = "上传中：" + file.name;
+    try {
+      const data = await uploadOne(file, (p) => {
+        uploadNote.textContent = "上传中：" + file.name + " " + Math.round(p * 100) + "%";
+      });
+      uploadNote.textContent = "已上传：" + file.name + "（" + fmtSize(data.size) + "），开始转写";
+      const job = await api("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "transcribe",
+          params: { source: data.path, name: "", engine: engine, language: language },
+        }),
+      });
+      const c = ensureCard(job);
+      paint(c);
+      poll();
+    } catch (err) {
+      formError.textContent = file.name + "：" + err.message;
+      uploadNote.textContent = "";
+      return;
+    }
+  }
+  uploadNote.textContent = "";
+}
+
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropzone.classList.add("over");
+});
+document.addEventListener("dragleave", (e) => {
+  if (!e.relatedTarget) dropzone.classList.remove("over");
+});
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("over");
+  if (e.dataTransfer?.files?.length) handleFiles([...e.dataTransfer.files]);
+});
+dropzone.addEventListener("click", (e) => {
+  if (e.target.closest("input")) return;
+  filepicker.click();
+});
+dropzone.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); filepicker.click(); }
+});
+filepicker.addEventListener("change", () => {
+  handleFiles([...filepicker.files]);
+  filepicker.value = "";
+});
+
+// ---------------------------------------------------------------- 设置 & LLM
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    $("#keep-server").checked = !!s.keep_server;
+  } catch {}
+}
+
+$("#keep-server").onchange = async (e) => {
+  const want = e.target.checked;
+  try {
+    const s = await api("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep_server: want }),
+    });
+    e.target.checked = !!s.keep_server;
+  } catch (err) {
+    e.target.checked = !want;
+    alert(err.message);
+  }
+};
+
+async function refreshLlm() {
+  try {
+    const s = await api("/api/llm");
+    $("#llm-state").textContent = s.running
+      ? "运行中" + (s.pid ? " · pid " + s.pid : " · 外部启动")
+      : (s.stale ? "未运行（有残留 pid，可点「停掉服务」清理）" : "未运行");
+  } catch {
+    $("#llm-state").textContent = "状态未知";
+  }
+}
+
+$("#stop-llm").onclick = async () => {
+  try {
+    const r = await api("/api/llm/stop", { method: "POST" });
+    if (!r.ok) throw new Error(r.error || "停止失败");
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  setTimeout(refreshLlm, 1200);
+  refreshLlm();
+};
+
+// ---------------------------------------------------------------- 轮询
 
 let polling = false;
 async function poll() {
@@ -226,6 +386,9 @@ $("#refresh").onclick = poll;
 
 // 打开页面先把历史任务拉出来（不展开日志）
 (async function init() {
+  loadSettings();
+  refreshLlm();
+  setInterval(refreshLlm, 5000);
   try {
     const list = await api("/api/jobs");
     await render(list);
