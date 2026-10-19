@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from engines.whisper import parse_srt
@@ -117,8 +119,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.task == "summary":
             text = src.read_text(encoding="utf-8", errors="replace")
             out = Path(args.out) if args.out else src.with_suffix(".summary.md")
-            result = summarize(client, text)
-            out.write_text(result + "\n", encoding="utf-8")
+            result = summarize(
+                client, text,
+                on_part=lambda i, n: print(f"     分段笔记 {i}/{n}", flush=True),
+            )
+            out.write_text(_summary_header(src, len(text)) + result + "\n", encoding="utf-8")
             print(result)
             print(f"\n[ok] 摘要 → {out}", flush=True)
 
@@ -137,6 +142,37 @@ def main(argv: list[str] | None = None) -> int:
                 print("[>>] 已关闭本次启动的服务", flush=True)
 
     return 0
+
+
+def _hms(seconds: float) -> str:
+    s = int(round(seconds))
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def _summary_header(src: Path, chars: int) -> str:
+    """摘要文件头部：来源、时长、引擎、生成时间。
+
+    没有它的话，过几天翻回来看一份 summary.md，完全不知道对应哪个视频。
+    stats 在同目录的 xxx.stats.json 里，顺手读一下。
+    """
+    lines = [f"> 字幕：`{src.name}` ／ {chars} 字"]
+    try:
+        st = json.loads(src.with_suffix(".stats.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st = None
+    if st:
+        lines.append(
+            f"> 素材：{st.get('source', '?')}"
+            f"（{_hms(st.get('duration_seconds') or 0)}，"
+            f"{st.get('segments', '?')} 条字幕）"
+        )
+        lines.append(
+            f"> 引擎：{st.get('engine', '?')}，转写 "
+            f"{st.get('transcribe_seconds', 0):.1f} 秒"
+            f"（{st.get('realtime_factor_total', 0):.2f}× 实时）"
+        )
+    lines.append(f"> 生成：{datetime.now():%Y-%m-%d %H:%M} · Qwen2.5-7B-Instruct 本地推理")
+    return "\n".join(lines) + "\n\n"
 
 
 def _srt_time(sec: float) -> str:
